@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "citerag"
+version = "0.1.0"
+description = "Self-hostable RAG API that answers questions about your documents with verifiable citations."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "GuiDobelin" }]
+keywords = ["rag", "llm", "claude", "fastapi", "retrieval", "citations"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "anthropic>=2.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-multipart>=0.0.9",
+    "pypdf>=5.0",
+    "numpy>=1.26",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+local = ["fastembed>=0.4"]
+qdrant = ["qdrant-client>=1.12"]
+all = ["citerag[local,qdrant]"]
+dev = ["citerag[all]", "pytest>=8", "httpx>=0.27", "ruff>=0.6"]
+
+[project.scripts]
+citerag = "citerag.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/GuiDobelin/citerag"
+Issues = "https://github.com/GuiDobelin/citerag/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/citerag"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "typer.Argument", "typer.Option"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
