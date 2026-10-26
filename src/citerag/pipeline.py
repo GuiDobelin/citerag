@@ -5,7 +5,7 @@ from citerag import loaders
 from citerag.chunking import split_text
 from citerag.config import Settings
 from citerag.embeddings import Embedder, FastEmbedEmbedder, HashEmbedder
-from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator, events_from_answer
+from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator
 from citerag.models import Answer, Chunk, DocumentInfo, Hit, StreamEvent
 from citerag.store import MemoryStore, QdrantStore, VectorStore
 
@@ -77,10 +77,9 @@ class RAG:
     def ask_stream(
         self, question: str, k: int | None = None, doc_ids: list[str] | None = None
     ) -> Iterator[StreamEvent]:
-        """Like `ask`, but yields the answer as it is generated. The last event is `Done`."""
+        """Like `ask`, but yields the answer as it is generated. The last event is `Done`.
+
+        Retrieval runs before this returns, so its errors surface here rather than mid-stream.
+        """
         hits = self.retrieve(question, k, doc_ids)
-        stream = getattr(self.generator, "stream", None)
-        if stream is None:  # custom generators written before streaming existed
-            yield from events_from_answer(self.generator.generate(question, hits))
-        else:
-            yield from stream(question, hits)
+        return self.generator.stream(question, hits)
