@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import anthropic
+import httpx
 import pytest
 from conftest import BERLIN, LISBON
 
@@ -141,9 +143,8 @@ def test_claude_stream_raises_on_refusal_after_partial_output():
 
 
 def test_claude_stream_wraps_api_errors_raised_mid_stream():
-    import anthropic
-
-    error = anthropic.APIConnectionError(request=None)
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    error = anthropic.APIConnectionError(request=request)
     messages = FakeMessages(stream=FakeStream(_text_block("Hi"), _final(), error=error))
     with pytest.raises(GenerationError, match="reach the Claude API"):
         list(ClaudeGenerator(client=_client(messages)).stream("q", _hits()))
@@ -174,16 +175,33 @@ def test_rag_ask_stream_ends_with_same_answer_as_ask(rag):
     assert events[-1].answer == rag.ask("Which city hosts Web Summit?")
 
 
-def test_rag_ask_stream_supports_generators_without_stream(rag):
-    class LegacyGenerator:
-        name = "legacy"
+def test_rag_ask_stream_retrieves_before_streaming(rag, monkeypatch):
+    def broken_retrieve(*args):
+        raise RuntimeError("store unavailable")
 
-        def generate(self, question, hits):
-            return Answer(answer="ok", citations=[], model=self.name)
+    monkeypatch.setattr(rag, "retrieve", broken_retrieve)
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        rag.ask_stream("q")  # raises on call, not on first next()
 
-    rag.generator = LegacyGenerator()
-    events = list(rag.ask_stream("q"))
-    assert events == [
-        TextDelta(text="ok"),
-        Done(answer=Answer(answer="ok", citations=[], model="legacy")),
+
+def test_claude_stream_continues_across_a_server_side_fallback():
+    cite = _cite(0, "It hosts Web Summit.")
+    fallback = SimpleNamespace(
+        type="fallback",
+        from_=SimpleNamespace(model="claude-opus-5-5"),
+        to=SimpleNamespace(model="claude-opus-4-8"),
+    )
+    events = [
+        *_text_block("Lisbon "),
+        SimpleNamespace(type="content_block_start", content_block=fallback),
+        SimpleNamespace(type="content_block_stop", content_block=fallback),
+        *_text_block("hosts Web Summit.", citations=[cite]),
     ]
+    final = _final(model="claude-opus-4-8")
+    messages = FakeMessages(stream=FakeStream(events, final))
+
+    out = list(ClaudeGenerator(client=_client(messages)).stream("q", _hits()))
+
+    assert out[-1].answer.answer == "Lisbon hosts Web Summit. [1]"
+    assert out[-1].answer.model == "claude-opus-4-8"
+    assert len(out[-1].answer.citations) == 1

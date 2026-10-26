@@ -27,7 +27,10 @@ class Generator(Protocol):
 
     def generate(self, question: str, hits: list[Hit]) -> Answer: ...
 
-    def stream(self, question: str, hits: list[Hit]) -> Iterator[StreamEvent]: ...
+    def stream(self, question: str, hits: list[Hit]) -> Iterator[StreamEvent]:
+        """Yield the answer as events, ending with `Done`. Generators that can't stream
+        natively can return `events_from_answer(self.generate(question, hits))`."""
+        ...
 
 
 def _citation(hit: Hit, quote: str) -> Citation:
@@ -151,9 +154,11 @@ class ClaudeGenerator:
     def stream(self, question: str, hits: list[Hit]) -> Iterator[StreamEvent]:
         """Stream the answer as it is generated.
 
-        Citation markers are emitted when their text block ends, so the streamed text reads
-        exactly like `generate()`'s answer. If the model declines mid-answer and the server
-        falls back to another model, the partial text is kept and the fallback continues it.
+        Citation markers are emitted when their text block ends, using the same numbering and
+        format as `generate()`. `Done.answer` is the whitespace-trimmed concatenation of the
+        deltas. If the model declines mid-answer and the server falls back to another model,
+        the partial text is kept and the fallback continues it (a non-streaming request would
+        return only the fallback's text).
         """
         if not hits:
             yield from events_from_answer(
