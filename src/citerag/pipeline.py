@@ -1,11 +1,12 @@
 import hashlib
+from collections.abc import Iterator
 
 from citerag import loaders
 from citerag.chunking import split_text
 from citerag.config import Settings
 from citerag.embeddings import Embedder, FastEmbedEmbedder, HashEmbedder
-from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator
-from citerag.models import Answer, Chunk, DocumentInfo, Hit
+from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator, events_from_answer
+from citerag.models import Answer, Chunk, DocumentInfo, Hit, StreamEvent
 from citerag.store import MemoryStore, QdrantStore, VectorStore
 
 
@@ -72,3 +73,14 @@ class RAG:
 
     def ask(self, question: str, k: int | None = None, doc_ids: list[str] | None = None) -> Answer:
         return self.generator.generate(question, self.retrieve(question, k, doc_ids))
+
+    def ask_stream(
+        self, question: str, k: int | None = None, doc_ids: list[str] | None = None
+    ) -> Iterator[StreamEvent]:
+        """Like `ask`, but yields the answer as it is generated. The last event is `Done`."""
+        hits = self.retrieve(question, k, doc_ids)
+        stream = getattr(self.generator, "stream", None)
+        if stream is None:  # custom generators written before streaming existed
+            yield from events_from_answer(self.generator.generate(question, hits))
+        else:
+            yield from stream(question, hits)
