@@ -55,7 +55,7 @@ pip install "citerag[local] @ git+https://github.com/GuiDobelin/citerag"
 export ANTHROPIC_API_KEY=sk-ant-...
 
 citerag ingest ./docs          # index a folder
-citerag ask "Summarise the refund policy"
+citerag ask "Summarise the refund policy"   # streams the answer; --no-stream waits for it
 citerag serve                  # start the API on :8000
 ```
 
