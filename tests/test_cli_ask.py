@@ -1,6 +1,7 @@
 import sys
 
 import pytest
+import typer
 from conftest import BERLIN, LISBON
 from typer.testing import CliRunner
 
@@ -127,8 +128,12 @@ def test_ask_streaming_prints_sources_once(use_rag):
     assert _ask().stdout == 'WS. [1]\n\nSources:\n  [1] lisbon.pdf, p. 2: "It hosts WS."\n'
 
 
-def test_ask_help_documents_no_stream():
-    assert "--no-stream" in runner.invoke(app, ["ask", "--help"]).stdout
+def test_ask_has_a_documented_no_stream_flag():
+    # Inspect the click command: rendered help is coloured by Rich on CI, splitting the text.
+    ask = typer.main.get_command(app).commands["ask"]
+    option = next(p for p in ask.params if p.name == "stream")
+    assert option.secondary_opts == ["--no-stream"] and option.default is True
+    assert option.help
 
 
 @pytest.mark.parametrize("stream", ["--stream", "--no-stream"])
