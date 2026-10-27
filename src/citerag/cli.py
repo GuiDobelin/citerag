@@ -3,6 +3,7 @@ from pathlib import Path
 import typer
 
 from citerag.llm import GenerationError
+from citerag.models import Answer, Citation, Done, TextDelta
 from citerag.pipeline import RAG
 
 app = typer.Typer(
@@ -23,21 +24,81 @@ def ingest(paths: list[Path] = typer.Argument(..., exists=True, help="Files or f
             typer.secho(f"skipped  {f}: {exc}", fg=typer.colors.YELLOW)
 
 
-@app.command()
-def ask(question: str, top_k: int = typer.Option(None, help="Number of chunks to retrieve.")):
-    """Ask a question about the indexed documents."""
+class _StreamPrinter:
+    """Echo answer deltas as they arrive, trimmed like `Answer.answer`: leading whitespace is
+    dropped and trailing whitespace is held back until more text follows it."""
+
+    def __init__(self) -> None:
+        self._started = False
+        self._held = ""
+
+    def write(self, text: str) -> None:
+        if not self._started:
+            text = text.lstrip()
+            if not text:
+                return
+            self._started = True
+        body = text.rstrip()
+        if body:
+            typer.echo(self._held + body, nl=False)
+            self._held = text[len(body) :]
+        else:
+            self._held += text
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    def end(self) -> None:
+        if self._started:
+            typer.echo()
+
+
+def _print_sources(citations: list[Citation]) -> None:
+    if not citations:
+        return
+    typer.echo("\nSources:")
+    for i, c in enumerate(citations, start=1):
+        where = f"{c.source}, p. {c.page}" if c.page else c.source
+        quote = " ".join(c.quote.split())[:160]
+        typer.echo(f'  [{i}] {where}: "{quote}"')
+
+
+def _ask_streaming(rag: RAG, question: str, top_k: int | None) -> Answer:
+    printer = _StreamPrinter()
     try:
-        answer = RAG.from_settings().ask(question, top_k)
+        for event in rag.ask_stream(question, top_k):
+            if isinstance(event, TextDelta):
+                printer.write(event.text)
+            elif isinstance(event, Done):
+                if not printer.started:
+                    typer.echo()  # match `--no-stream`, which prints a line even for ""
+                return event.answer
+        raise GenerationError("The answer stream ended unexpectedly.")
+    finally:
+        printer.end()
+
+
+@app.command()
+def ask(
+    question: str,
+    top_k: int = typer.Option(None, help="Number of chunks to retrieve."),
+    stream: bool = typer.Option(
+        True, "--stream/--no-stream", help="Print the answer as it is generated."
+    ),
+):
+    """Ask a question about the indexed documents."""
+    rag = RAG.from_settings()
+    try:
+        if stream:
+            answer = _ask_streaming(rag, question, top_k)
+        else:
+            answer = rag.ask(question, top_k)
+            typer.echo(answer.answer)
     except GenerationError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
-    typer.echo(answer.answer)
-    if answer.citations:
-        typer.echo("\nSources:")
-        for i, c in enumerate(answer.citations, start=1):
-            where = f"{c.source}, p. {c.page}" if c.page else c.source
-            quote = " ".join(c.quote.split())[:160]
-            typer.echo(f'  [{i}] {where}: "{quote}"')
+    _print_sources(answer.citations)
 
 
 @app.command()
