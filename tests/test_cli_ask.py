@@ -129,3 +129,13 @@ def test_ask_streaming_prints_sources_once(use_rag):
 
 def test_ask_help_documents_no_stream():
     assert "--no-stream" in runner.invoke(app, ["ask", "--help"]).stdout
+
+
+@pytest.mark.parametrize("stream", ["--stream", "--no-stream"])
+def test_ask_strips_terminal_escape_sequences(use_rag, stream):
+    evil = "Hi \x1b[2J\x1b]8;;http://x\x07there\x9b31m\r\nok\tdone \x07"
+    quote = Citation(chunk_id="a:0", doc_id="a", source="e\x1bvil.txt", quote="q\x1b[31m")
+    answer = Answer(answer=evil, citations=[quote], model="m")
+    use_rag.generator = ScriptedGenerator([TextDelta(text=evil), Done(answer=answer)])
+    out = _ask(stream).stdout
+    assert out == 'Hi [2J]8;;http://xthere31m\nok\tdone\n\nSources:\n  [1] evil.txt: "q[31m"\n'
