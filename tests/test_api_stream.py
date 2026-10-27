@@ -101,3 +101,43 @@ def test_stream_is_documented_in_openapi(client):
     op = client.get("/openapi.json").json()["paths"]["/query/stream"]["post"]
     assert "text/event-stream" in op["responses"]["200"]["content"]
     assert "event" in op["description"].lower()
+
+
+class UpFrontFailingGenerator:
+    name = "up-front"
+
+    def generate(self, question, hits):
+        raise GenerationError("Claude rejected the credentials.")
+
+    def stream(self, question, hits):
+        raise GenerationError("Claude rejected the credentials.")
+        yield  # makes this a lazy generator, like ClaudeGenerator.stream
+
+
+def test_stream_returns_502_for_errors_before_the_first_event(client, rag):
+    rag.generator = UpFrontFailingGenerator()
+    r = client.post("/query/stream", json={"question": "q"})
+    assert r.status_code == 502
+    assert r.json()["detail"] == "Claude rejected the credentials."
+    assert client.post("/query", json={"question": "q"}).status_code == 502
+
+
+class NoDoneGenerator:
+    name = "no-done"
+
+    def generate(self, question, hits):
+        raise NotImplementedError
+
+    def __init__(self, events):
+        self.events = events
+
+    def stream(self, question, hits):
+        yield from self.events
+
+
+@pytest.mark.parametrize("events", [[], [TextDelta(text="Half an answer")]])
+def test_stream_always_ends_with_done_or_error(client, rag, events):
+    rag.generator = NoDoneGenerator(events)
+    frames = parse_sse(client.post("/query/stream", json={"question": "q"}).text)
+    assert frames[-1] == ("error", {"detail": "The answer stream ended unexpectedly."})
+    assert [k for k, _ in frames[:-1]] == ["delta"] * len(events)
