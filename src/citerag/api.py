@@ -1,7 +1,8 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import lru_cache
+from itertools import chain
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -11,7 +12,7 @@ from citerag import __version__
 from citerag.config import Settings
 from citerag.llm import GenerationError
 from citerag.loaders import UnsupportedFileError
-from citerag.models import Answer, CitationEvent, DocumentInfo, Done, StreamEvent, TextDelta
+from citerag.models import Answer, DocumentInfo, Done, StreamEvent
 from citerag.pipeline import RAG
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,8 @@ STREAM_DESCRIPTION = """Same body as `POST /query`, but the answer is streamed a
 - `citation`: `{"index": 1, "citation": {...}}`, a source cited for the first time.
 - `done`: the complete answer, same shape as the `POST /query` response. Always last on success.
 - `error`: `{"detail": "..."}`, sent instead of `done` if generation fails mid-stream.
+
+Errors before the first event return a normal HTTP error (502 for generation failures).
 """
 
 
@@ -32,19 +35,17 @@ def sse_frame(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def sse_events(events: Iterator[StreamEvent]) -> Iterator[str]:
-    """Encode stream events as SSE frames. Errors become an `error` frame, because the
-    response status (200) has already been sent when they happen."""
+def sse_events(events: Iterable[StreamEvent]) -> Iterator[str]:
+    """Encode stream events as SSE frames, ending with `done` or `error`. Errors become an
+    `error` frame, because the response status (200) has already been sent when they happen."""
     try:
         for event in events:
-            if isinstance(event, TextDelta):
-                yield sse_frame("delta", {"text": event.text})
-            elif isinstance(event, CitationEvent):
-                yield sse_frame(
-                    "citation", {"index": event.index, "citation": event.citation.model_dump()}
-                )
-            elif isinstance(event, Done):
-                yield sse_frame("done", event.answer.model_dump())
+            if isinstance(event, Done):
+                yield sse_frame("done", event.answer.model_dump(mode="json"))
+                return
+            yield sse_frame(event.type, event.model_dump(mode="json", exclude={"type"}))
+        logger.error("Answer stream ended without a Done event")
+        yield sse_frame("error", {"detail": "The answer stream ended unexpectedly."})
     except GenerationError as exc:
         yield sse_frame("error", {"detail": str(exc)})
     except Exception:
@@ -121,10 +122,17 @@ def create_app() -> FastAPI:
         responses={200: {"content": {"text/event-stream": {}}}},
     )
     def query_stream(body: QueryRequest, rag: RAG = Depends(get_rag)) -> StreamingResponse:
-        # Retrieval runs here, before the response starts, so its errors still get a status.
+        # Retrieval and the first event run before the response starts, so errors that
+        # happen up front (bad credentials, rate limits) still get a 502 like POST /query.
         events = rag.ask_stream(body.question, body.top_k, body.doc_ids)
+        try:
+            first = [next(events)]
+        except StopIteration:
+            first = []
+        except GenerationError as exc:
+            raise HTTPException(502, str(exc)) from exc
         return StreamingResponse(
-            sse_events(events), media_type="text/event-stream", headers=SSE_HEADERS
+            sse_events(chain(first, events)), media_type="text/event-stream", headers=SSE_HEADERS
         )
 
     return app

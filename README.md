@@ -117,7 +117,8 @@ data: {"answer": "...", "citations": [...], "model": "claude-opus-5-5"}
 ```
 
 `done` has the same shape as the `/query` response and is always the last event. If generation
-fails after the stream has started, an `event: error` with `{"detail": "..."}` is sent instead.
+fails before the first event, the endpoint returns `502` like `/query`; if it fails after the
+stream has started, an `event: error` with `{"detail": "..."}` is sent instead of `done`.
 
 ## Configuration
 
