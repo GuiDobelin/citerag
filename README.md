@@ -70,6 +70,7 @@ passages back verbatim, with no LLM involved.
 | `GET`    | `/documents`          | List indexed documents.                              |
 | `DELETE` | `/documents/{doc_id}` | Remove a document and its chunks.                    |
 | `POST`   | `/query`              | `{"question": "...", "top_k": 5, "doc_ids": [...]}`  |
+| `POST`   | `/query/stream`       | Same body as `/query`; streams Server-Sent Events.   |
 | `GET`    | `/health`             | Liveness check.                                      |
 
 Example `/query` response:
@@ -89,6 +90,34 @@ Example `/query` response:
   "model": "claude-opus-5-5"
 }
 ```
+
+### Streaming
+
+`POST /query/stream` sends the answer as it is generated, as
+[Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events):
+
+```bash
+curl -N -X POST http://localhost:8000/query/stream \
+     -H "Content-Type: application/json" \
+     -d '{"question": "What notice period does the contract require?"}'
+```
+
+```text
+event: delta
+data: {"text": "Either party may terminate the agreement with 60 days' written notice."}
+
+event: citation
+data: {"index": 1, "citation": {"chunk_id": "9f2c41d07a3be2c1:14", "source": "services-agreement.pdf", "page": 7, ...}}
+
+event: delta
+data: {"text": " [1]"}
+
+event: done
+data: {"answer": "...", "citations": [...], "model": "claude-opus-5-5"}
+```
+
+`done` has the same shape as the `/query` response and is always the last event. If generation
+fails after the stream has started, an `event: error` with `{"detail": "..."}` is sent instead.
 
 ## Configuration
 
