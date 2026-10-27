@@ -24,6 +24,17 @@ def ingest(paths: list[Path] = typer.Argument(..., exists=True, help="Files or f
             typer.secho(f"skipped  {f}: {exc}", fg=typer.colors.YELLOW)
 
 
+# C0/C1 control characters except tab and newline, so text from indexed documents can't send
+# escape sequences to the user's terminal.
+_CONTROL_CHARS = dict.fromkeys(
+    c for c in [*range(0x20), *range(0x7F, 0xA0)] if c not in (0x09, 0x0A)
+)
+
+
+def _printable(text: str) -> str:
+    return text.translate(_CONTROL_CHARS)
+
+
 class _StreamPrinter:
     """Echo answer deltas as they arrive, trimmed like `Answer.answer`: leading whitespace is
     dropped and trailing whitespace is held back until more text follows it."""
@@ -33,6 +44,7 @@ class _StreamPrinter:
         self._held = ""
 
     def write(self, text: str) -> None:
+        text = _printable(text)
         if not self._started:
             text = text.lstrip()
             if not text:
@@ -45,11 +57,8 @@ class _StreamPrinter:
         else:
             self._held += text
 
-    @property
-    def started(self) -> bool:
-        return self._started
-
     def end(self) -> None:
+        """Terminate a partial line, e.g. before an error message."""
         if self._started:
             typer.echo()
 
@@ -59,8 +68,8 @@ def _print_sources(citations: list[Citation]) -> None:
         return
     typer.echo("\nSources:")
     for i, c in enumerate(citations, start=1):
-        where = f"{c.source}, p. {c.page}" if c.page else c.source
-        quote = " ".join(c.quote.split())[:160]
+        where = _printable(f"{c.source}, p. {c.page}" if c.page else c.source)
+        quote = _printable(" ".join(c.quote.split()))[:160]
         typer.echo(f'  [{i}] {where}: "{quote}"')
 
 
@@ -71,12 +80,12 @@ def _ask_streaming(rag: RAG, question: str, top_k: int | None) -> Answer:
             if isinstance(event, TextDelta):
                 printer.write(event.text)
             elif isinstance(event, Done):
-                if not printer.started:
-                    typer.echo()  # match `--no-stream`, which prints a line even for ""
+                typer.echo()  # the answer's final newline, as with `--no-stream`
                 return event.answer
         raise GenerationError("The answer stream ended unexpectedly.")
-    finally:
+    except BaseException:
         printer.end()
+        raise
 
 
 @app.command()
@@ -94,7 +103,7 @@ def ask(
             answer = _ask_streaming(rag, question, top_k)
         else:
             answer = rag.ask(question, top_k)
-            typer.echo(answer.answer)
+            typer.echo(_printable(answer.answer).strip())
     except GenerationError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
