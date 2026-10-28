@@ -175,6 +175,13 @@ it instead of duplicating it.
 
 Ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Ecosystem
+
+Small, standalone tools built alongside citerag:
+
+- [llm-cost](https://github.com/GuiDobelin/llm-cost): estimate token counts and API cost per
+  model from the CLI or Python, including prompt-cache and long-context pricing.
+
 ## Development
 
 ```bash
