@@ -18,6 +18,13 @@ Sources:
   [1] services-agreement.pdf, p. 7: "Either party may terminate this Agreement upon sixty (60) days' written notice..."
 ```
 
+<p align="center">
+  <img src="docs/demo.svg" alt="citerag ingesting two Markdown files and streaming an answer with its sources" width="760">
+</p>
+
+<sub>The demo runs offline with the `extractive` generator; regenerate it with
+`python scripts/make_demo.py`.</sub>
+
 ## Why citerag
 
 - **Verifiable answers.** Uses Claude's built-in citations API: quotes are returned by the model
@@ -120,6 +127,35 @@ data: {"answer": "...", "citations": [...], "model": "claude-opus-5-5"}
 fails before the first event, the endpoint returns `502` like `/query`; if it fails after the
 stream has started, an `event: error` with `{"detail": "..."}` is sent instead of `done`.
 
+`EventSource` only supports `GET`, so in the browser read the stream with `fetch`:
+
+```js
+const res = await fetch("/query/stream", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ question: "What notice period does the contract require?" }),
+});
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+let buffer = "";
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += value;
+  const frames = buffer.split("\n\n");
+  buffer = frames.pop(); // keep a partial frame for the next chunk
+  for (const frame of frames) {
+    const event = frame.match(/^event: (.*)$/m)?.[1];
+    const data = JSON.parse(frame.match(/^data: (.*)$/m)?.[1] ?? "null");
+    if (event === "delta") output.textContent += data.text;
+    if (event === "done") showSources(data.citations);
+    if (event === "error") showError(data.detail);
+  }
+}
+```
+
+From the command line, `citerag ask` streams by default; pass `--no-stream` to print the answer
+only once it is complete.
+
 ## Configuration
 
 All settings are environment variables (or entries in `.env`).
@@ -168,7 +204,7 @@ it instead of duplicating it.
 
 - [ ] Background ingestion queue for large uploads
 - [ ] Hybrid search (BM25 + vectors) and reranking
-- [ ] Streaming answers (SSE)
+- [x] Streaming answers (SSE)
 - [ ] API keys and per-tenant collections
 - [ ] Evaluation harness for retrieval quality
 - [ ] More loaders: DOCX, web crawling
@@ -190,6 +226,9 @@ pip install -e ".[dev]"
 pytest
 ruff check . && ruff format --check .
 ```
+
+If you change the CLI output, regenerate the README demo with `python scripts/make_demo.py`;
+a test fails while `docs/demo.svg` is out of date.
 
 Tests use a fake LLM client and a hashing embedder, so they run offline and free.
 
