@@ -2,9 +2,9 @@
 <style>
 text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;white-space:pre;fill:#d4d4d4}
 .cmd{fill:#7ee787}.head{fill:#79c0ff;font-weight:bold}
-.l{opacity:0;animation:show .01s linear forwards}
-@keyframes show{to{opacity:1}}
-@media (prefers-reduced-motion:reduce){.l{animation:none;opacity:1}}
+.l{animation:wait .01s linear backwards}
+@keyframes wait{from,to{opacity:0}}
+@media (prefers-reduced-motion:reduce){.l{animation:none}}
 </style>
 <rect width="809" height="406" rx="8" fill="#0d1117"/>
 <rect width="809" height="30" rx="8" fill="#161b22"/>
