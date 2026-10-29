@@ -110,6 +110,24 @@ def ask(
     _print_sources(answer.citations)
 
 
+@app.command("list")
+def list_documents():
+    """List documents indexed in the local store."""
+    documents = RAG.from_settings().store.documents()
+    for document in documents:
+        typer.echo(f"{document.doc_id}  {document.source}  ({document.chunks} chunks)")
+
+
+@app.command()
+def delete(doc_id: str):
+    """Delete an indexed document by its ID."""
+    store = RAG.from_settings().store
+    if not store.delete(doc_id):
+        typer.secho(f"Document not found: {doc_id}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Deleted document: {doc_id}")
+
+
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
     """Run the HTTP API."""
