@@ -48,3 +48,15 @@ def test_committed_demo_matches_the_current_cli_output(demo, tmp_path):
     out = demo.main([str(tmp_path / "demo.svg")])
     committed = (ROOT / "docs" / "demo.svg").read_text(encoding="utf-8")
     assert out.read_text(encoding="utf-8") == committed, "run: python scripts/make_demo.py"
+
+
+def test_lines_stay_visible_without_css_animation(demo):
+    svg = demo.render_svg([("x", "y")])
+    style = svg.split("<style>")[1].split("</style>")[0]
+    # Only the keyframes may hide text, so a renderer that ignores them shows a static frame.
+    assert "opacity:0" not in style.replace("@keyframes wait{from,to{opacity:0}}", "")
+    assert "backwards" in style
+
+
+def test_empty_session_renders_an_empty_terminal(demo):
+    assert _lines(demo.render_svg([])) == []

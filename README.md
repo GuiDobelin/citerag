@@ -19,7 +19,7 @@ Sources:
 ```
 
 <p align="center">
-  <img src="docs/demo.svg" alt="citerag ingesting two Markdown files and streaming an answer with its sources" width="760">
+  <img src="https://raw.githubusercontent.com/GuiDobelin/citerag/main/docs/demo.svg" alt="citerag ingesting two Markdown files and streaming an answer with its sources" width="760">
 </p>
 
 <sub>The demo runs offline with the `extractive` generator; regenerate it with
@@ -135,6 +135,7 @@ const res = await fetch("/query/stream", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ question: "What notice period does the contract require?" }),
 });
+if (!res.ok) throw new Error((await res.json()).detail); // e.g. 502 before the stream starts
 const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 let buffer = "";
 for (;;) {

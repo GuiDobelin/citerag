@@ -20,6 +20,7 @@ from citerag.cli import app
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = ROOT / "docs" / "demo"
+SAMPLE_FILES = ("refund-policy.md", "shipping.md")
 OUTPUT = ROOT / "docs" / "demo.svg"
 QUESTION = "How long do customers have to ask for a refund?"
 
@@ -45,7 +46,7 @@ def run_session(data_dir: Path) -> list[tuple[str, str]]:
         "CITERAG_TOP_K": "2",
     }
     runner = CliRunner()
-    samples = sorted(p.name for p in SAMPLES.glob("*.md"))
+    samples = list(SAMPLE_FILES)
     steps = [
         ("citerag ingest " + " ".join(samples), ["ingest", *samples]),
         (f'citerag ask "{QUESTION}"', ["ask", QUESTION]),
@@ -85,7 +86,8 @@ def render_svg(session: list[tuple[str, str]]) -> str:
                 delay += OUTPUT_DELAY
         rows.append(("out", "", delay))
         delay += OUTPUT_DELAY
-    rows.pop()  # no blank line after the last command
+    if rows:
+        rows.pop()  # no blank line after the last command
 
     width = round(PADDING * 2 + COLUMNS * CHAR_WIDTH)
     height = TITLE_BAR + PADDING * 2 + LINE_HEIGHT * len(rows)
@@ -97,9 +99,11 @@ def render_svg(session: list[tuple[str, str]]) -> str:
         "text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
         "font-size:14px;white-space:pre;fill:#d4d4d4}",
         ".cmd{fill:#7ee787}.head{fill:#79c0ff;font-weight:bold}",
-        ".l{opacity:0;animation:show .01s linear forwards}",
-        "@keyframes show{to{opacity:1}}",
-        "@media (prefers-reduced-motion:reduce){.l{animation:none;opacity:1}}",
+        # Hidden only while waiting (fill-mode backwards), so renderers without CSS animation
+        # still show every line.
+        ".l{animation:wait .01s linear backwards}",
+        "@keyframes wait{from,to{opacity:0}}",
+        "@media (prefers-reduced-motion:reduce){.l{animation:none}}",
         "</style>",
         f'<rect width="{width}" height="{height}" rx="8" fill="#0d1117"/>',
         f'<rect width="{width}" height="{TITLE_BAR}" rx="8" fill="#161b22"/>',
