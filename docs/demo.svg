@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="809" height="406" viewBox="0 0 809 406" role="img" aria-label="citerag ingesting two files and streaming a cited answer">
+<style>
+text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;white-space:pre;fill:#d4d4d4}
+.cmd{fill:#7ee787}.head{fill:#79c0ff;font-weight:bold}
+.l{opacity:0;animation:show .01s linear forwards}
+@keyframes show{to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.l{animation:none;opacity:1}}
+</style>
+<rect width="809" height="406" rx="8" fill="#0d1117"/>
+<rect width="809" height="30" rx="8" fill="#161b22"/>
+<circle cx="18" cy="15" r="6" fill="#ff5f57"/>
+<circle cx="38" cy="15" r="6" fill="#febc2e"/>
+<circle cx="58" cy="15" r="6" fill="#28c840"/>
+<text class="l cmd" x="18" y="63" style="animation-delay:0.30s">$ citerag ingest refund-policy.md shipping.md</text>
+<text class="l out" x="18" y="83" style="animation-delay:1.20s">indexed  refund-policy.md  (3 chunks, id=2de954d16e57d3e3)</text>
+<text class="l out" x="18" y="103" style="animation-delay:1.45s">indexed  shipping.md  (2 chunks, id=ee55a223a1944eb7)</text>
+<text class="l out" x="18" y="123" style="animation-delay:1.70s"></text>
+<text class="l cmd" x="18" y="143" style="animation-delay:1.95s">$ citerag ask "How long do customers have to ask for a refund?"</text>
+<text class="l out" x="18" y="163" style="animation-delay:2.85s"># Refund policy</text>
+<text class="l out" x="18" y="183" style="animation-delay:3.10s"></text>
+<text class="l out" x="18" y="203" style="animation-delay:3.35s">Customers can request a full refund within 30 days of purchase. After 30 days, refunds are</text>
+<text class="l out" x="18" y="223" style="animation-delay:3.60s">offered as store credit only. [1]</text>
+<text class="l out" x="18" y="243" style="animation-delay:3.85s"></text>
+<text class="l out" x="18" y="263" style="animation-delay:4.10s">Refunds are paid back to the original payment method within 5 business days of approval. [2]</text>
+<text class="l out" x="18" y="283" style="animation-delay:4.35s"></text>
+<text class="l head" x="18" y="303" style="animation-delay:4.60s">Sources:</text>
+<text class="l out" x="18" y="323" style="animation-delay:4.85s">  [1] refund-policy.md: "# Refund policy Customers can request a full refund within 30 days</text>
+<text class="l out" x="18" y="343" style="animation-delay:5.10s">      of purchase. After 30 days, refunds are offered as store credit only."</text>
+<text class="l out" x="18" y="363" style="animation-delay:5.35s">  [2] refund-policy.md: "Refunds are paid back to the original payment method within 5</text>
+<text class="l out" x="18" y="383" style="animation-delay:5.60s">      business days of approval."</text>
+</svg>
