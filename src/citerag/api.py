@@ -101,11 +101,11 @@ def create_app() -> FastAPI:
 
     @app.get("/documents", response_model=list[DocumentInfo])
     def list_documents(rag: RAG = Depends(get_rag)) -> list[DocumentInfo]:
-        return rag.store.documents()
+        return rag.documents()
 
     @app.delete("/documents/{doc_id}", status_code=204)
     def delete_document(doc_id: str, rag: RAG = Depends(get_rag)) -> None:
-        if not rag.store.delete(doc_id):
+        if not rag.delete(doc_id):
             raise HTTPException(404, "Document not found.")
 
     @app.post("/query", response_model=Answer)
