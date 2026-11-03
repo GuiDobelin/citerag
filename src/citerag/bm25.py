@@ -9,13 +9,22 @@ from collections.abc import Iterable
 
 from citerag.models import Chunk, Hit
 
-_TOKEN = re.compile(r"\w+")
+# Chinese and Japanese are written without spaces, so each ideograph or kana is a token.
+_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_TOKEN = re.compile(rf"[{_CJK}]|[^\W{_CJK}]+")
+# Accents are only stripped from Latin, Greek and Cyrillic letters; in scripts such as
+# Devanagari or Thai the combining marks are vowels and change the word.
+_FOLDABLE_BELOW = 0x0530
 
 
 def tokenize(text: str) -> list[str]:
     """Lowercase, strip accents (so "ação" matches "acao") and split into word tokens."""
-    folded = unicodedata.normalize("NFKD", text.casefold())
-    return _TOKEN.findall("".join(ch for ch in folded if not unicodedata.combining(ch)))
+    kept: list[str] = []
+    for ch in unicodedata.normalize("NFKD", text.casefold()):
+        if unicodedata.combining(ch) and kept and ord(kept[-1]) < _FOLDABLE_BELOW:
+            continue
+        kept.append(ch)
+    return _TOKEN.findall(unicodedata.normalize("NFC", "".join(kept)))
 
 
 class BM25Index:
@@ -26,13 +35,15 @@ class BM25Index:
     """
 
     def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
-        if k1 < 0 or not 0 <= b <= 1:
-            raise ValueError("BM25 needs k1 >= 0 and 0 <= b <= 1.")
+        if not (math.isfinite(k1) and k1 >= 0 and 0 <= b <= 1):
+            raise ValueError("BM25 needs a finite k1 >= 0 and 0 <= b <= 1.")
         self.k1 = k1
         self.b = b
         self._lock = threading.RLock()
         self._chunks: dict[str, Chunk] = {}
+        self._terms: dict[str, list[str]] = {}
         self._lengths: dict[str, int] = {}
+        self._by_doc: dict[str, set[str]] = defaultdict(set)
         self._postings: dict[str, dict[str, int]] = defaultdict(dict)
         self._total_length = 0
 
@@ -46,6 +57,8 @@ class BM25Index:
                 self._remove(chunk.id)
                 counts = Counter(tokenize(chunk.text))
                 self._chunks[chunk.id] = chunk
+                self._terms[chunk.id] = list(counts)
+                self._by_doc[chunk.doc_id].add(chunk.id)
                 self._lengths[chunk.id] = sum(counts.values())
                 self._total_length += self._lengths[chunk.id]
                 for term, tf in counts.items():
@@ -54,8 +67,8 @@ class BM25Index:
     def delete(self, doc_id: str) -> bool:
         """Remove every chunk of a document. Returns False if it was not indexed."""
         with self._lock:
-            ids = [cid for cid, c in self._chunks.items() if c.doc_id == doc_id]
-            for cid in ids:
+            ids = self._by_doc.pop(doc_id, set())
+            for cid in list(ids):
                 self._remove(cid)
             return bool(ids)
 
@@ -87,7 +100,12 @@ class BM25Index:
         if chunk is None:
             return
         self._total_length -= self._lengths.pop(chunk_id)
-        for term in set(tokenize(chunk.text)):
+        doc_chunks = self._by_doc.get(chunk.doc_id)
+        if doc_chunks is not None:
+            doc_chunks.discard(chunk_id)
+            if not doc_chunks:
+                del self._by_doc[chunk.doc_id]
+        for term in self._terms.pop(chunk_id):
             postings = self._postings[term]
             postings.pop(chunk_id, None)
             if not postings:
