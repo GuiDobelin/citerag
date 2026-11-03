@@ -102,7 +102,36 @@ def test_ties_are_deterministic():
     assert [h.chunk.id for h in idx.search("same", k=2)] == ["a:0", "b:0"]
 
 
-@pytest.mark.parametrize("k1, b", [(-0.1, 0.75), (1.5, -0.1), (1.5, 1.1)])
+def test_tokenize_splits_cjk_into_characters():
+    assert tokenize("東京は日本の首都です") == list("東京は日本の首都です")
+    assert tokenize("Tokyo東京2024") == ["tokyo", "東", "京", "2024"]
+
+
+def test_cjk_word_matches_inside_unspaced_text():
+    idx = BM25Index()
+    idx.add([_chunk("ja:0", "東京は日本の首都です"), _chunk("en:0", "Paris is in France")])
+    assert idx.search("東京", k=2)[0].chunk.id == "ja:0"
+
+
+def test_tokenize_keeps_vowel_signs_in_non_latin_scripts():
+    assert tokenize("कम") != tokenize("कुम")
+    assert tokenize("Ελλάδα") == ["ελλαδα"]
+
+
+def test_moving_chunk_to_another_doc_updates_doc_index():
+    idx = BM25Index()
+    idx.add([_chunk("x:0", "alpha", doc_id="old")])
+    idx.add([_chunk("x:0", "alpha", doc_id="new")])
+    assert idx.delete("old") is False
+    assert idx.delete("new") is True
+    assert len(idx) == 0
+    assert idx.search("alpha", k=1) == []
+
+
+@pytest.mark.parametrize(
+    "k1, b",
+    [(-0.1, 0.75), (1.5, -0.1), (1.5, 1.1), (math.nan, 0.75), (math.inf, 0.75), (1.5, math.nan)],
+)
 def test_rejects_invalid_parameters(k1, b):
     with pytest.raises(ValueError):
         BM25Index(k1=k1, b=b)
