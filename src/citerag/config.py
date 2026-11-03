@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,8 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
     top_k: int = 5
+    retrieval_mode: Literal["vector", "keyword", "hybrid"] = "hybrid"
+    rrf_k: int = Field(60, ge=0)
 
     # API
     max_upload_mb: int = 25

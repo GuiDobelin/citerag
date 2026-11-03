@@ -16,6 +16,7 @@ class VectorStore(Protocol):
     def add(self, chunks: list[Chunk], vectors: np.ndarray) -> None: ...
     def search(self, vector: np.ndarray, k: int, doc_ids: list[str] | None = None) -> list[Hit]: ...
     def documents(self) -> list[DocumentInfo]: ...
+    def chunks(self) -> list[Chunk]: ...
     def delete(self, doc_id: str) -> bool: ...
 
 
@@ -62,6 +63,11 @@ class MemoryStore:
             counts = Counter(c.doc_id for c in self._chunks)
             sources = {c.doc_id: c.source for c in self._chunks}
             return [DocumentInfo(doc_id=d, source=sources[d], chunks=n) for d, n in counts.items()]
+
+    def chunks(self) -> list[Chunk]:
+        """Every stored chunk, e.g. to rebuild the keyword index at start-up."""
+        with self._lock:
+            return list(self._chunks)
 
     def delete(self, doc_id: str) -> bool:
         with self._lock:
@@ -146,6 +152,18 @@ class QdrantStore:
             if offset is None:
                 break
         return [DocumentInfo(doc_id=d, source=sources[d], chunks=n) for d, n in counts.items()]
+
+    def chunks(self) -> list[Chunk]:
+        """Every stored chunk, e.g. to rebuild the keyword index at start-up."""
+        out: list[Chunk] = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                self._collection, limit=1000, offset=offset, with_payload=True
+            )
+            out.extend(Chunk(**p.payload) for p in points)
+            if offset is None:
+                return out
 
     def delete(self, doc_id: str) -> bool:
         m = self._models
