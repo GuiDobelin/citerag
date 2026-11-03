@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from citerag.models import RetrievalMode
+
 
 class Settings(BaseSettings):
     """Runtime configuration, read from environment variables prefixed with CITERAG_."""
@@ -30,7 +32,7 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
     top_k: int = 5
-    retrieval_mode: Literal["vector", "keyword", "hybrid"] = "hybrid"
+    retrieval_mode: RetrievalMode = "hybrid"
     rrf_k: int = Field(60, ge=0)
 
     # API
