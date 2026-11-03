@@ -211,8 +211,10 @@ it instead of duplicating it.
   one alongside the API.
 - **More traffic:** with Qdrant the vectors live outside the API, so you can run several
   replicas behind a load balancer. The BM25 index is per process, though: a replica only sees
-  keyword matches for documents it ingested itself or that existed when it started. Until the
-  keyword index is shared, use `CITERAG_RETRIEVAL_MODE=vector` with several replicas.
+  keyword matches for documents it ingested itself or that existed when it built the index
+  (on its first query). The same applies to a running API when you ingest into the same
+  Qdrant with the CLI. Until the keyword index is shared, use `CITERAG_RETRIEVAL_MODE=vector`
+  in those setups, or restart the API after ingesting.
 - **Costs:** lower `CITERAG_CLAUDE_EFFORT` or `CITERAG_TOP_K`, or use a smaller model.
 
 ## Roadmap

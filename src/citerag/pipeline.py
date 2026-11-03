@@ -1,7 +1,8 @@
 import hashlib
 import threading
 from collections.abc import Iterator
-from typing import Literal
+from contextlib import contextmanager
+from typing import get_args
 
 from citerag import loaders
 from citerag.bm25 import BM25Index
@@ -10,11 +11,10 @@ from citerag.config import Settings
 from citerag.embeddings import Embedder, FastEmbedEmbedder, HashEmbedder
 from citerag.fusion import DEFAULT_RRF_K, rrf_fuse
 from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator
-from citerag.models import Answer, Chunk, DocumentInfo, Hit, StreamEvent
+from citerag.models import Answer, Chunk, DocumentInfo, Hit, RetrievalMode, StreamEvent
 from citerag.store import MemoryStore, QdrantStore, VectorStore
 
-RetrievalMode = Literal["vector", "keyword", "hybrid"]
-RETRIEVAL_MODES: tuple[RetrievalMode, ...] = ("vector", "keyword", "hybrid")
+RETRIEVAL_MODES: tuple[RetrievalMode, ...] = get_args(RetrievalMode)
 # In hybrid mode each retriever returns this many times `k` candidates before fusion, so a
 # chunk ranked just below `k` by both retrievers can still win.
 CANDIDATE_FACTOR = 4
@@ -24,9 +24,9 @@ class RAG:
     """Ingest documents, retrieve relevant chunks, and generate cited answers.
 
     Retrieval ranks chunks by vector similarity, by BM25 keyword relevance, or by both fused
-    with Reciprocal Rank Fusion (`hybrid`). The keyword index lives in memory: it is rebuilt
-    from the store on first use and kept in sync by `ingest` and `delete`, so documents
-    should be removed through `RAG.delete` rather than on the store directly.
+    with Reciprocal Rank Fusion (`hybrid`). The keyword index lives in memory: it is built
+    from the store on the first keyword or hybrid query and kept in sync by `ingest` and
+    `delete`, so documents should be removed through `RAG.delete`, not on the store.
     """
 
     def __init__(
@@ -42,6 +42,8 @@ class RAG:
     ) -> None:
         if retrieval_mode not in RETRIEVAL_MODES:
             raise ValueError(f"retrieval_mode must be one of {', '.join(RETRIEVAL_MODES)}.")
+        if rrf_k < 0:
+            raise ValueError("rrf_k must be >= 0.")
         self.embedder = embedder
         self.store = store
         self.generator = generator
@@ -53,8 +55,6 @@ class RAG:
         # Guards the keyword index together with the store writes it mirrors.
         self._lock = threading.RLock()
         self._keyword_index: BM25Index | None = None
-        if retrieval_mode != "vector":
-            self._keywords()
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> "RAG":
@@ -98,7 +98,7 @@ class RAG:
         if not chunks:
             raise ValueError(f"No extractable text found in '{filename}'.")
         vectors = self.embedder.embed([c.text for c in chunks])
-        with self._lock:
+        with self._lock, self._resync_on_error():
             self.store.delete(doc_id)
             self.store.add(chunks, vectors)
             if self._keyword_index is not None:
@@ -111,15 +111,18 @@ class RAG:
 
     def delete(self, doc_id: str) -> bool:
         """Remove a document from the store and the keyword index. False if it was unknown."""
-        with self._lock:
+        with self._lock, self._resync_on_error():
+            deleted = self.store.delete(doc_id)
             if self._keyword_index is not None:
                 self._keyword_index.delete(doc_id)
-            return self.store.delete(doc_id)
+            return deleted
 
     def retrieve(
         self, question: str, k: int | None = None, doc_ids: list[str] | None = None
     ) -> list[Hit]:
-        k = k or self.top_k
+        k = self.top_k if k is None else k
+        if k < 1:
+            raise ValueError("k must be >= 1.")
         if self.retrieval_mode == "keyword":
             return self._keywords().search(question, k, doc_ids)
         vector = self.embedder.embed([question])[0]
@@ -153,3 +156,13 @@ class RAG:
                 index.add(self.store.chunks())
                 self._keyword_index = index
             return self._keyword_index
+
+    @contextmanager
+    def _resync_on_error(self) -> Iterator[None]:
+        """If a store write fails midway, drop the keyword index so it is rebuilt from the store
+        on the next query instead of drifting from it."""
+        try:
+            yield
+        except BaseException:
+            self._keyword_index = None
+            raise

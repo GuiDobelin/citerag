@@ -144,3 +144,8 @@ def test_ask_strips_terminal_escape_sequences(use_rag, stream):
     use_rag.generator = ScriptedGenerator([TextDelta(text=evil), Done(answer=answer)])
     out = _ask(stream).stdout
     assert out == 'Hi [2J]8;;http://xthere31m\nok\tdone\n\nSources:\n  [1] evil.txt: "q[31m"\n'
+
+
+def test_ask_rejects_non_positive_top_k(use_rag):
+    result = runner.invoke(app, ["ask", "Lisbon?", "--top-k", "0"])
+    assert result.exit_code != 0

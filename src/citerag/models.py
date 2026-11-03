@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+RetrievalMode = Literal["vector", "keyword", "hybrid"]
+
 
 class Chunk(BaseModel):
     id: str

@@ -102,7 +102,8 @@ def test_keyword_index_is_rebuilt_from_a_persisted_store(tmp_path):
     _ingest_corpus(first)
     # A new process: the store loads from disk and the keyword index is rebuilt from it.
     restarted = _rag(tmp_path, "hybrid", BlindEmbedder())
-    assert len(restarted._keyword_index) == len(restarted.store.chunks())
+    assert restarted._keyword_index is None  # built lazily, not on construction
+    assert len(restarted._keywords()) == len(restarted.store.chunks())
     assert restarted.retrieve("ZX-4471")[0].chunk.source == "rare.txt"
 
 
@@ -133,3 +134,64 @@ def test_settings_default_to_hybrid(monkeypatch, tmp_path):
     rag = RAG.from_settings()
     assert rag.retrieval_mode == "vector"
     assert rag.rrf_k == 60
+
+
+def test_constructing_rag_does_not_read_the_whole_store(tmp_path):
+    store = MemoryStore(tmp_path / "store")
+    calls = []
+    store.chunks = lambda: calls.append(1) or []
+    rag = _rag(tmp_path, "hybrid", store=store)
+    assert calls == []  # e.g. `citerag ingest` never pays for the index
+    rag.retrieve("anything")
+    rag.retrieve("anything")
+    assert calls == [1]
+
+
+class FailingStore(MemoryStore):
+    fail_on: str = ""
+
+    def add(self, chunks, vectors):
+        if self.fail_on == "add":
+            raise OSError("disk full")
+        super().add(chunks, vectors)
+
+    def delete(self, doc_id):
+        if self.fail_on == "delete":
+            raise ConnectionError("store unreachable")
+        return super().delete(doc_id)
+
+
+def test_failed_store_add_does_not_leave_stale_keyword_hits(tmp_path):
+    store = FailingStore(tmp_path / "store")
+    rag = _rag(tmp_path, "keyword", BlindEmbedder(), store=store)
+    rag.ingest("rare.txt", RARE.encode())
+    assert rag.retrieve("ZX-4471")
+    store.fail_on = "add"
+    with pytest.raises(OSError):
+        rag.ingest("rare.txt", RARE.encode())  # delete succeeded, add failed: doc is gone
+    assert rag.retrieve("ZX-4471") == []
+
+
+def test_failed_store_delete_keeps_keyword_hits(tmp_path):
+    store = FailingStore(tmp_path / "store")
+    rag = _rag(tmp_path, "keyword", BlindEmbedder(), store=store)
+    doc = rag.ingest("rare.txt", RARE.encode())
+    rag.retrieve("ZX-4471")
+    store.fail_on = "delete"
+    with pytest.raises(ConnectionError):
+        rag.delete(doc.doc_id)
+    store.fail_on = ""
+    assert rag.retrieve("ZX-4471")[0].chunk.doc_id == doc.doc_id
+
+
+@pytest.mark.parametrize("k", [0, -1])
+def test_retrieve_rejects_non_positive_k(tmp_path, k):
+    rag = _rag(tmp_path)
+    rag.ingest("lisbon.txt", LISBON.encode())
+    with pytest.raises(ValueError):
+        rag.retrieve("Lisbon", k)
+
+
+def test_rrf_k_is_validated_on_construction(tmp_path):
+    with pytest.raises(ValueError):
+        RAG(HashEmbedder(), MemoryStore(), ExtractiveGenerator(), rrf_k=-1)

@@ -91,7 +91,7 @@ def _ask_streaming(rag: RAG, question: str, top_k: int | None) -> Answer:
 @app.command()
 def ask(
     question: str,
-    top_k: int = typer.Option(None, help="Number of chunks to retrieve."),
+    top_k: int = typer.Option(None, min=1, help="Number of chunks to retrieve."),
     stream: bool = typer.Option(
         True, "--stream/--no-stream", help="Print the answer as it is generated."
     ),
