@@ -175,6 +175,8 @@ All settings are environment variables (or entries in `.env`).
 | `CITERAG_CHUNK_SIZE`       | `1000`                   | Characters per chunk.                            |
 | `CITERAG_CHUNK_OVERLAP`    | `150`                    | Overlap between chunks.                          |
 | `CITERAG_TOP_K`            | `5`                      | Chunks retrieved per question.                   |
+| `CITERAG_RETRIEVAL_MODE`   | `hybrid`                 | `hybrid` (BM25 + vectors), `vector` or `keyword`. |
+| `CITERAG_RRF_K`            | `60`                     | Reciprocal Rank Fusion constant for `hybrid`.    |
 | `CITERAG_MAX_UPLOAD_MB`    | `25`                     | Upload size limit.                               |
 
 [models]: https://qdrant.github.io/fastembed/examples/Supported_Models/
@@ -182,13 +184,23 @@ All settings are environment variables (or entries in `.env`).
 ## How it works
 
 ```text
-upload ─▶ load (PDF/MD/TXT/HTML) ─▶ chunk ─▶ embed (local) ─▶ vector store
-                                                                  │
-question ─▶ embed ─▶ top-k search ────────────────────────────────┘
-                         │
-                         ▼
+upload ─▶ load (PDF/MD/TXT/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
+                                           └▶ BM25 keyword index ────────────┤
+                                                                             │
+question ─▶ vector search + keyword search ─▶ RRF fusion ─▶ top-k chunks ◀───┘
+                                                              │
+                                                              ▼
           Claude (each chunk sent as a citable document) ─▶ answer + quotes
 ```
+
+Retrieval is **hybrid** by default. Vector search finds passages that mean the same thing as
+the question; BM25 finds exact terms that embeddings tend to blur, such as error codes, names
+or IDs. Each side returns `4 × top_k` candidates and the two rankings are merged with
+[Reciprocal Rank Fusion][rrf] (`score = Σ 1 / (60 + rank)`), which only looks at positions, so
+the two scores never need calibrating. The keyword index is kept in memory and rebuilt from the
+store when the app starts.
+
+[rrf]: https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
 
 Documents are identified by a hash of their content, so uploading the same file twice replaces
 it instead of duplicating it.
@@ -197,14 +209,17 @@ it instead of duplicating it.
 
 - **More documents:** set `CITERAG_STORE=qdrant`. `docker compose --profile qdrant up` starts
   one alongside the API.
-- **More traffic:** with Qdrant the API is stateless, so you can run several replicas behind a
-  load balancer.
+- **More traffic:** with Qdrant the vectors live outside the API, so you can run several
+  replicas behind a load balancer. The BM25 index is per process, though: a replica only sees
+  keyword matches for documents it ingested itself or that existed when it started. Until the
+  keyword index is shared, use `CITERAG_RETRIEVAL_MODE=vector` with several replicas.
 - **Costs:** lower `CITERAG_CLAUDE_EFFORT` or `CITERAG_TOP_K`, or use a smaller model.
 
 ## Roadmap
 
 - [ ] Background ingestion queue for large uploads
-- [ ] Hybrid search (BM25 + vectors) and reranking
+- [x] Hybrid search (BM25 + vectors with RRF)
+- [ ] Optional cross-encoder reranking
 - [x] Streaming answers (SSE)
 - [ ] API keys and per-tenant collections
 - [ ] Evaluation harness for retrieval quality
