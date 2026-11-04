@@ -235,6 +235,8 @@ Small, standalone tools built alongside citerag:
 
 - [llm-cost](https://github.com/GuiDobelin/llm-cost): estimate token counts and API cost per
   model from the CLI or Python, including prompt-cache and long-context pricing.
+- [bm25-tiny](https://github.com/GuiDobelin/bm25-tiny): Okapi BM25 / BM25+ keyword search in
+  pure Python with no dependencies, with incremental updates, JSON persistence and a CLI.
 
 ## Development
 
