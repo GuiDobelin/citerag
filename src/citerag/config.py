@@ -5,6 +5,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from citerag.models import RetrievalMode
+from citerag.rerank import DEFAULT_RERANK_MODEL
 
 
 class Settings(BaseSettings):
@@ -34,6 +35,9 @@ class Settings(BaseSettings):
     top_k: int = 5
     retrieval_mode: RetrievalMode = "hybrid"
     rrf_k: int = Field(60, ge=0)
+    reranker: Literal["none", "fastembed"] = "none"
+    rerank_model: str = DEFAULT_RERANK_MODEL
+    rerank_candidates: int = Field(20, ge=1)
 
     # API
     max_upload_mb: int = 25
