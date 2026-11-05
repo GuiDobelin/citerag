@@ -149,3 +149,24 @@ def test_ask_strips_terminal_escape_sequences(use_rag, stream):
 def test_ask_rejects_non_positive_top_k(use_rag):
     result = runner.invoke(app, ["ask", "Lisbon?", "--top-k", "0"])
     assert result.exit_code != 0
+
+
+def test_ask_accepts_per_query_mode_and_rejects_invalid(use_rag):
+    calls = []
+    original_ask = use_rag.ask
+
+    def recording_ask(question, k=None, doc_ids=None, mode=None):
+        calls.append(mode)
+        return original_ask(question, k, doc_ids, mode)
+
+    use_rag.ask = recording_ask
+    result = runner.invoke(
+        app, ["ask", "Which city hosts Web Summit?", "--mode", "keyword", "--no-stream"]
+    )
+    assert result.exit_code == 0
+    assert calls == ["keyword"]
+    assert use_rag.retrieval_mode == "hybrid"
+
+    invalid = runner.invoke(app, ["ask", "question", "--mode", "semantic"])
+    assert invalid.exit_code != 0
+    assert "vector, keyword, or hybrid" in invalid.stderr

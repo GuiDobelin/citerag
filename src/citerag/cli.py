@@ -3,8 +3,8 @@ from pathlib import Path
 import typer
 
 from citerag.llm import GenerationError
-from citerag.models import Answer, Citation, Done, TextDelta
-from citerag.pipeline import RAG
+from citerag.models import Answer, Citation, Done, RetrievalMode, TextDelta
+from citerag.pipeline import RETRIEVAL_MODES, RAG
 
 app = typer.Typer(
     help="Answers about your documents, with citations you can check.", no_args_is_help=True
@@ -78,10 +78,12 @@ def _print_sources(citations: list[Citation]) -> None:
         typer.echo(f'  [{i}] {where}: "{quote}"')
 
 
-def _ask_streaming(rag: RAG, question: str, top_k: int | None) -> Answer:
+def _ask_streaming(
+    rag: RAG, question: str, top_k: int | None, mode: RetrievalMode | None
+) -> Answer:
     printer = _StreamPrinter()
     try:
-        for event in rag.ask_stream(question, top_k):
+        for event in rag.ask_stream(question, top_k, mode=mode):
             if isinstance(event, TextDelta):
                 printer.write(event.text)
             elif isinstance(event, Done):
@@ -100,14 +102,20 @@ def ask(
     stream: bool = typer.Option(
         True, "--stream/--no-stream", help="Print the answer as it is generated."
     ),
+    mode: str | None = typer.Option(
+        None, "--mode", help="Retrieval mode: vector, keyword, or hybrid."
+    ),
 ):
     """Ask a question about the indexed documents."""
+    if mode is not None and mode not in RETRIEVAL_MODES:
+        raise typer.BadParameter(f"must be one of {', '.join(RETRIEVAL_MODES)}")
+    selected_mode = mode
     rag = RAG.from_settings()
     try:
         if stream:
-            answer = _ask_streaming(rag, question, top_k)
+            answer = _ask_streaming(rag, question, top_k, selected_mode)
         else:
-            answer = rag.ask(question, top_k)
+            answer = rag.ask(question, top_k, mode=selected_mode)
             typer.echo(_printable(answer.answer).strip())
     except GenerationError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)

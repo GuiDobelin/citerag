@@ -38,3 +38,22 @@ def test_upload_rejects_unsupported_type(client):
 
 def test_query_validates_input(client):
     assert client.post("/query", json={"question": ""}).status_code == 422
+
+
+def test_query_accepts_per_request_mode_and_rejects_invalid(client):
+    uploaded = client.post(
+        "/documents", files={"file": ("lisbon.txt", LISBON.encode(), "text/plain")}
+    )
+    assert uploaded.status_code == 201
+
+    response = client.post(
+        "/query", json={"question": "Where is Web Summit held?", "mode": "keyword"}
+    )
+    assert response.status_code == 200
+    assert response.json()["citations"][0]["source"] == "lisbon.txt"
+    assert client.app.dependency_overrides[get_rag]().retrieval_mode == "hybrid"
+
+    invalid = client.post(
+        "/query", json={"question": "Where is Web Summit held?", "mode": "semantic"}
+    )
+    assert invalid.status_code == 422
