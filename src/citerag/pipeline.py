@@ -12,6 +12,7 @@ from citerag.embeddings import Embedder, FastEmbedEmbedder, HashEmbedder
 from citerag.fusion import DEFAULT_RRF_K, rrf_fuse
 from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator
 from citerag.models import Answer, Chunk, DocumentInfo, Hit, RetrievalMode, StreamEvent
+from citerag.rerank import FastEmbedReranker, Reranker, rerank
 from citerag.store import MemoryStore, QdrantStore, VectorStore
 
 RETRIEVAL_MODES: tuple[RetrievalMode, ...] = get_args(RetrievalMode)
@@ -27,6 +28,9 @@ class RAG:
     with Reciprocal Rank Fusion (`hybrid`). The keyword index lives in memory: it is built
     from the store on the first keyword or hybrid query and kept in sync by `ingest` and
     `delete`, so documents should be removed through `RAG.delete`, not on the store.
+
+    An optional `reranker` then rescores the best `rerank_candidates` chunks by reading each
+    one together with the question, and keeps the top `k` of its ranking.
     """
 
     def __init__(
@@ -39,11 +43,15 @@ class RAG:
         top_k: int = 5,
         retrieval_mode: RetrievalMode = "hybrid",
         rrf_k: int = DEFAULT_RRF_K,
+        reranker: Reranker | None = None,
+        rerank_candidates: int = 20,
     ) -> None:
         if retrieval_mode not in RETRIEVAL_MODES:
             raise ValueError(f"retrieval_mode must be one of {', '.join(RETRIEVAL_MODES)}.")
         if rrf_k < 0:
             raise ValueError("rrf_k must be >= 0.")
+        if rerank_candidates < 1:
+            raise ValueError("rerank_candidates must be >= 1.")
         self.embedder = embedder
         self.store = store
         self.generator = generator
@@ -52,6 +60,8 @@ class RAG:
         self.top_k = top_k
         self.retrieval_mode = retrieval_mode
         self.rrf_k = rrf_k
+        self.reranker = reranker
+        self.rerank_candidates = rerank_candidates
         # Guards the keyword index together with the store writes it mirrors.
         self._lock = threading.RLock()
         self._keyword_index: BM25Index | None = None
@@ -73,6 +83,7 @@ class RAG:
             if s.generator == "extractive"
             else ClaudeGenerator(s.claude_model, s.claude_effort, s.max_answer_tokens)
         )
+        reranker = FastEmbedReranker(s.rerank_model) if s.reranker == "fastembed" else None
         return cls(
             embedder,
             store,
@@ -82,6 +93,8 @@ class RAG:
             s.top_k,
             retrieval_mode=s.retrieval_mode,
             rrf_k=s.rrf_k,
+            reranker=reranker,
+            rerank_candidates=s.rerank_candidates,
         )
 
     def ingest(self, filename: str, data: bytes) -> DocumentInfo:
@@ -123,6 +136,13 @@ class RAG:
         k = self.top_k if k is None else k
         if k < 1:
             raise ValueError("k must be >= 1.")
+        if self.reranker is None:
+            return self._first_stage(question, k, doc_ids)
+        # The reranker always sees at least `k` candidates, so it can fill the requested `k`.
+        candidates = self._first_stage(question, max(k, self.rerank_candidates), doc_ids)
+        return rerank(self.reranker, question, candidates, k)
+
+    def _first_stage(self, question: str, k: int, doc_ids: list[str] | None) -> list[Hit]:
         if self.retrieval_mode == "keyword":
             return self._keywords().search(question, k, doc_ids)
         vector = self.embedder.embed([question])[0]
