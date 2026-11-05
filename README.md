@@ -177,9 +177,13 @@ All settings are environment variables (or entries in `.env`).
 | `CITERAG_TOP_K`            | `5`                      | Chunks retrieved per question.                   |
 | `CITERAG_RETRIEVAL_MODE`   | `hybrid`                 | `hybrid` (BM25 + vectors), `vector` or `keyword`. |
 | `CITERAG_RRF_K`            | `60`                     | Reciprocal Rank Fusion constant for `hybrid`.    |
+| `CITERAG_RERANKER`         | `none`                   | `none` or `fastembed` (local cross-encoder).     |
+| `CITERAG_RERANK_MODEL`     | `Xenova/ms-marco-MiniLM-L-6-v2` | Any [fastembed reranker][rerankers]. Use `jinaai/jina-reranker-v2-base-multilingual` for non-English documents. |
+| `CITERAG_RERANK_CANDIDATES` | `20`                    | Chunks the reranker rescores (at least `top_k`). |
 | `CITERAG_MAX_UPLOAD_MB`    | `25`                     | Upload size limit.                               |
 
 [models]: https://qdrant.github.io/fastembed/examples/Supported_Models/
+[rerankers]: https://qdrant.github.io/fastembed/examples/Supported_Models/#supported-rerank-cross-encoder-models
 
 ## How it works
 
@@ -187,9 +191,9 @@ All settings are environment variables (or entries in `.env`).
 upload ─▶ load (PDF/MD/TXT/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
                                            └▶ BM25 keyword index ────────────┤
                                                                              │
-question ─▶ vector search + keyword search ─▶ RRF fusion ─▶ top-k chunks ◀───┘
-                                                              │
-                                                              ▼
+question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀─────┘
+                                                            │
+                                                            ▼
           Claude (each chunk sent as a citable document) ─▶ answer + quotes
 ```
 
@@ -201,6 +205,14 @@ the two scores never need calibrating. The keyword index is kept in memory and r
 store when the app starts.
 
 [rrf]: https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+
+Reranking is optional. With `CITERAG_RERANKER=fastembed`, a small cross-encoder reads the
+question together with each of the best 20 candidates and reorders them before the top `k`
+go to Claude. Embeddings compare the question and a passage that were encoded separately; a
+cross-encoder sees both at once, so it is better at telling a passage that *answers* the
+question from one that merely shares its words. It costs latency (about 0.3 s per question
+for 20 full-size chunks on a laptop CPU with the default model), and the model (~90 MB) is
+downloaded on first use.
 
 Documents are identified by a hash of their content, so uploading the same file twice replaces
 it instead of duplicating it.
@@ -221,7 +233,7 @@ it instead of duplicating it.
 
 - [ ] Background ingestion queue for large uploads
 - [x] Hybrid search (BM25 + vectors with RRF)
-- [ ] Optional cross-encoder reranking
+- [x] Optional cross-encoder reranking
 - [x] Streaming answers (SSE)
 - [ ] API keys and per-tenant collections
 - [ ] Evaluation harness for retrieval quality
