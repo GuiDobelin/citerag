@@ -72,6 +72,11 @@ def test_rerank_orders_by_score_and_cuts_to_k():
     assert [h.score for h in hits] == before  # the input hits are not mutated
 
 
+def test_rerank_puts_an_infinite_score_first():
+    out = rerank(FixedReranker([0.5, math.inf, -math.inf]), "q", _hits("a", "b", "c"), 3)
+    assert _texts(out) == ["b", "a", "c"]
+
+
 def test_rerank_keeps_first_stage_order_for_ties_and_non_finite_scores():
     hits = _hits("a", "b", "c", "d")
     out = rerank(FixedReranker([math.nan, 0.5, 0.5, -math.inf]), "q", hits, 4)
