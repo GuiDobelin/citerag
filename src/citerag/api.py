@@ -12,7 +12,7 @@ from citerag import __version__
 from citerag.config import Settings
 from citerag.llm import GenerationError
 from citerag.loaders import UnsupportedFileError
-from citerag.models import Answer, DocumentInfo, Done, StreamEvent
+from citerag.models import Answer, DocumentInfo, Done, RetrievalMode, StreamEvent
 from citerag.pipeline import RAG
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,10 @@ class QueryRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=50)
     doc_ids: list[str] | None = Field(
         default=None, description="Restrict the search to these documents."
+    )
+    mode: RetrievalMode | None = Field(
+        default=None,
+        description="Retrieval mode for this query; defaults to the server setting.",
     )
 
 
@@ -111,7 +115,7 @@ def create_app() -> FastAPI:
     @app.post("/query", response_model=Answer)
     def query(body: QueryRequest, rag: RAG = Depends(get_rag)) -> Answer:
         try:
-            return rag.ask(body.question, body.top_k, body.doc_ids)
+            return rag.ask(body.question, body.top_k, body.doc_ids, body.mode)
         except GenerationError as exc:
             raise HTTPException(502, str(exc)) from exc
 
@@ -124,7 +128,7 @@ def create_app() -> FastAPI:
     def query_stream(body: QueryRequest, rag: RAG = Depends(get_rag)) -> StreamingResponse:
         # Retrieval and the first event run before the response starts, so errors that
         # happen up front (bad credentials, rate limits) still get a 502 like POST /query.
-        events = rag.ask_stream(body.question, body.top_k, body.doc_ids)
+        events = rag.ask_stream(body.question, body.top_k, body.doc_ids, body.mode)
         try:
             first = [next(events)]
         except StopIteration:

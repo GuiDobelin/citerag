@@ -5,7 +5,7 @@ from conftest import BERLIN, LISBON
 from citerag.config import Settings
 from citerag.embeddings import HashEmbedder
 from citerag.llm import ExtractiveGenerator
-from citerag.models import Chunk
+from citerag.models import Chunk, Done
 from citerag.pipeline import RAG
 from citerag.store import MemoryStore
 
@@ -195,3 +195,17 @@ def test_retrieve_rejects_non_positive_k(tmp_path, k):
 def test_rrf_k_is_validated_on_construction(tmp_path):
     with pytest.raises(ValueError):
         RAG(HashEmbedder(), MemoryStore(), ExtractiveGenerator(), rrf_k=-1)
+
+
+def test_retrieval_mode_can_be_overridden_per_query(tmp_path):
+    rag = _rag(tmp_path, "hybrid", BlindEmbedder())
+    _ingest_corpus(rag)
+    question = "What does ZX-4471 mean?"
+
+    assert rag.retrieve(question, mode="vector")[0].chunk.source != "rare.txt"
+    assert rag.retrieve(question, mode="keyword")[0].chunk.source == "rare.txt"
+    assert rag.ask(question, mode="keyword").citations[0].source == "rare.txt"
+    events = list(rag.ask_stream(question, mode="keyword"))
+    assert isinstance(events[-1], Done)
+    assert events[-1].answer.citations[0].source == "rare.txt"
+    assert rag.retrieval_mode == "hybrid"
