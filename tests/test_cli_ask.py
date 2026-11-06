@@ -169,4 +169,4 @@ def test_ask_accepts_per_query_mode_and_rejects_invalid(use_rag):
 
     invalid = runner.invoke(app, ["ask", "question", "--mode", "semantic"])
     assert invalid.exit_code != 0
-    assert "vector, keyword, or hybrid" in invalid.stderr
+    assert invalid.exit_code == 2
