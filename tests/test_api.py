@@ -32,7 +32,7 @@ def test_upload_query_list_delete(client):
 
 
 def test_upload_rejects_unsupported_type(client):
-    r = client.post("/documents", files={"file": ("photo.png", b"\\x89PNG", "image/png")})
+    r = client.post("/documents", files={"file": ("photo.png", b"\x89PNG", "image/png")})
     assert r.status_code == 415
 
 
