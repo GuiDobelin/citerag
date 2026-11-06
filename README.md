@@ -63,6 +63,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 citerag ingest ./docs          # index a folder
 citerag ask "Summarise the refund policy"   # streams the answer; --no-stream waits for it
+citerag list                   # show indexed documents and their ids
+citerag delete DOC_ID          # remove a document
 citerag serve                  # start the API on :8000
 ```
 

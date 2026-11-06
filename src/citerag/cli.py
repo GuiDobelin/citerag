@@ -35,6 +35,11 @@ def _printable(text: str) -> str:
     return text.translate(_CONTROL_CHARS)
 
 
+def _one_line(text: str) -> str:
+    """`_printable`, with line breaks folded to spaces so a value prints on a single line."""
+    return " ".join(_printable(text).splitlines())
+
+
 class _StreamPrinter:
     """Echo answer deltas as they arrive, trimmed like `Answer.answer`: leading whitespace is
     dropped and trailing whitespace is held back until more text follows it."""
@@ -108,6 +113,26 @@ def ask(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
     _print_sources(answer.citations)
+
+
+@app.command("list")
+def list_documents():
+    """List the indexed documents."""
+    docs = RAG.from_settings().documents()
+    if not docs:
+        typer.echo("No documents indexed.")
+        return
+    for d in docs:
+        typer.echo(f"{_one_line(d.doc_id)}  {_one_line(d.source)}  ({d.chunks} chunks)")
+
+
+@app.command()
+def delete(doc_id: str = typer.Argument(..., help="Id of the document, as shown by `list`.")):
+    """Remove a document from the index."""
+    if not RAG.from_settings().delete(doc_id):
+        typer.secho(f"No document with id '{_one_line(doc_id)}'.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    typer.echo(f"deleted  {_one_line(doc_id)}")
 
 
 @app.command()
