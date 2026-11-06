@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
+### Added
+
+- Okapi BM25 keyword index over the ingested chunks, with Unicode-aware tokenization
+  (accent folding for Latin, Greek and Cyrillic; per-character tokens for CJK) (#13, #17).
+- Hybrid retrieval: BM25 and vector rankings merged with Reciprocal Rank Fusion. Select it with
+  `CITERAG_RETRIEVAL_MODE` (`hybrid`, `vector` or `keyword`) and tune it with `CITERAG_RRF_K` (#14, #18).
+- `RAG.documents()` and `RAG.delete()`, which keep the vector store and the keyword index in
+  sync (#18).
+- Optional cross-encoder reranking after first-stage retrieval. Enable it with
+  `CITERAG_RERANKER=fastembed` (needs the `local` extra), and set `CITERAG_RERANK_MODEL` and
+  `CITERAG_RERANK_CANDIDATES` (#15, #20).
+- `bm25-tiny` added to the README's "Ecosystem" section (#19).
+
+### Changed
+
+- The default retrieval mode is now `hybrid`. Set `CITERAG_RETRIEVAL_MODE=vector` to keep the
+  v0.2.0 behaviour. Use `vector` when several replicas, or the CLI and the API, write to a shared
+  Qdrant, because the keyword index lives in memory in each process.
+- **Custom vector stores:** the `VectorStore` protocol now requires a `chunks()` method, which
+  is used to rebuild the keyword index at start-up.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added
@@ -33,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files and answer questions with verifiable citations, using Claude or an offline extractive
   generator, with an in-process vector store or Qdrant.
 
-[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/GuiDobelin/citerag/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GuiDobelin/citerag/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/GuiDobelin/citerag/releases/tag/v0.1.0
