@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `citerag list` and `citerag delete DOC_ID` commands to show and remove indexed documents (#5).
+
 ## [0.3.0] - 2026-11-06
 
 ### Added

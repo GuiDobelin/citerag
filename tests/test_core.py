@@ -74,3 +74,14 @@ def test_memory_store_persists_between_instances(tmp_path):
     reloaded = MemoryStore(tmp_path)
     assert len(reloaded.documents()) == 2
     assert reloaded.search(e.embed(["Lisbon trams"])[0], 1)[0].chunk.doc_id == "a"
+
+
+def test_memory_store_reopens_after_its_last_document_is_deleted(tmp_path):
+    e = HashEmbedder()
+    chunks = [c for c in _chunks() if c.doc_id == "a"]
+    store = MemoryStore(tmp_path)
+    store.add(chunks, e.embed([c.text for c in chunks]))
+    assert store.delete("a") is True
+    reloaded = MemoryStore(tmp_path)
+    assert reloaded.documents() == []
+    assert reloaded.search(e.embed(["Lisbon trams"])[0], 1) == []
