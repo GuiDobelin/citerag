@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "citerag"
-version = "0.2.0"
+version = "0.3.0"
 description = "Self-hostable RAG API that answers questions about your documents with verifiable citations."
 readme = "README.md"
 license = "MIT"
