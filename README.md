@@ -80,6 +80,10 @@ passages back verbatim, with no LLM involved.
 | `POST`   | `/query/stream`       | Same body as `/query`; streams Server-Sent Events.   |
 | `GET`    | `/health`             | Liveness check.                                      |
 
+Both query endpoints accept an optional `mode` field: `vector`, `keyword`, or `hybrid`.
+When omitted, the configured `CITERAG_RETRIEVAL_MODE` is used. The CLI supports the same
+per-question override with `citerag ask "your question" --mode keyword`.
+
 Example `/query` response:
 
 ```json

@@ -145,6 +145,7 @@ class RAG:
             raise ValueError(f"mode must be one of {', '.join(RETRIEVAL_MODES)}.")
         if self.reranker is None:
             return self._first_stage(question, k, doc_ids, selected_mode)
+        # The reranker always sees at least `k` candidates, so it can fill the requested `k`.
         candidates = self._first_stage(
             question, max(k, self.rerank_candidates), doc_ids, selected_mode
         )
