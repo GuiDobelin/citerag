@@ -33,7 +33,9 @@ class MemoryStore:
         self._vectors: np.ndarray | None = None
         if path and (path / "chunks.json").exists():
             self._chunks = [Chunk(**c) for c in json.loads((path / "chunks.json").read_text())]
-            self._vectors = np.load(path / "vectors.npy")
+            # Deleting the last document leaves an empty chunks.json and no vectors.npy.
+            if self._chunks:
+                self._vectors = np.load(path / "vectors.npy")
 
     def add(self, chunks: list[Chunk], vectors: np.ndarray) -> None:
         with self._lock:
