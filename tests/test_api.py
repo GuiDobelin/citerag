@@ -32,7 +32,7 @@ def test_upload_query_list_delete(client):
 
 
 def test_upload_rejects_unsupported_type(client):
-    r = client.post("/documents", files={"file": ("photo.png", b"\x89PNG", "image/png")})
+    r = client.post("/documents", files={"file": ("photo.png", b"\\x89PNG", "image/png")})
     assert r.status_code == 415
 
 
@@ -55,5 +55,28 @@ def test_query_accepts_per_request_mode_and_rejects_invalid(client):
 
     invalid = client.post(
         "/query", json={"question": "Where is Web Summit held?", "mode": "semantic"}
+    )
+    assert invalid.status_code == 422
+
+
+def test_query_stream_accepts_per_request_mode_and_rejects_invalid(client):
+    uploaded = client.post(
+        "/documents", files={"file": ("lisbon.txt", LISBON.encode(), "text/plain")}
+    )
+    assert uploaded.status_code == 201
+
+    response = client.post(
+        "/query/stream",
+        json={"question": "Where is Web Summit held?", "mode": "keyword"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: done" in response.text
+    assert '"source": "lisbon.txt"' in response.text
+    assert client.app.dependency_overrides[get_rag]().retrieval_mode == "hybrid"
+
+    invalid = client.post(
+        "/query/stream",
+        json={"question": "Where is Web Summit held?", "mode": "semantic"},
     )
     assert invalid.status_code == 422
