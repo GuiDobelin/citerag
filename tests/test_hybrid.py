@@ -5,7 +5,7 @@ from conftest import BERLIN, LISBON
 from citerag.config import Settings
 from citerag.embeddings import HashEmbedder
 from citerag.llm import ExtractiveGenerator
-from citerag.models import Chunk
+from citerag.models import Chunk, Done
 from citerag.pipeline import RAG
 from citerag.store import MemoryStore
 
@@ -34,8 +34,6 @@ def _rag(tmp_path, mode="hybrid", embedder=None, store=None) -> RAG:
 
 
 def _ingest_corpus(rag: RAG) -> None:
-    # The rare document is ingested last; with identical vectors the vector store keeps
-    # insertion order, so a vector-only ranker returns a filler document first.
     for n in range(5):
         rag.ingest(f"filler{n}.txt", f"Filler document number {n} about trams.".encode())
     rag.ingest("lisbon.txt", LISBON.encode())
@@ -61,7 +59,7 @@ def test_vector_mode_reproduces_plain_vector_search(tmp_path):
     question = "Which city hosts Web Summit?"
     expected = rag.store.search(rag.embedder.embed([question])[0], 3)
     assert rag.retrieve(question, 3) == expected
-    assert rag._keyword_index is None  # vector mode never builds the keyword index
+    assert rag._keyword_index is None
 
 
 def test_keyword_mode_uses_bm25_only(tmp_path):
@@ -100,9 +98,8 @@ def test_doc_ids_filter_applies_to_both_retrievers(tmp_path):
 def test_keyword_index_is_rebuilt_from_a_persisted_store(tmp_path):
     first = _rag(tmp_path, "vector", BlindEmbedder())
     _ingest_corpus(first)
-    # A new process: the store loads from disk and the keyword index is rebuilt from it.
     restarted = _rag(tmp_path, "hybrid", BlindEmbedder())
-    assert restarted._keyword_index is None  # built lazily, not on construction
+    assert restarted._keyword_index is None
     assert len(restarted._keywords()) == len(restarted.store.chunks())
     assert restarted.retrieve("ZX-4471")[0].chunk.source == "rare.txt"
 
@@ -141,7 +138,7 @@ def test_constructing_rag_does_not_read_the_whole_store(tmp_path):
     calls = []
     store.chunks = lambda: calls.append(1) or []
     rag = _rag(tmp_path, "hybrid", store=store)
-    assert calls == []  # e.g. `citerag ingest` never pays for the index
+    assert calls == []
     rag.retrieve("anything")
     rag.retrieve("anything")
     assert calls == [1]
@@ -168,7 +165,7 @@ def test_failed_store_add_does_not_leave_stale_keyword_hits(tmp_path):
     assert rag.retrieve("ZX-4471")
     store.fail_on = "add"
     with pytest.raises(OSError):
-        rag.ingest("rare.txt", RARE.encode())  # delete succeeded, add failed: doc is gone
+        rag.ingest("rare.txt", RARE.encode())
     assert rag.retrieve("ZX-4471") == []
 
 
@@ -195,3 +192,26 @@ def test_retrieve_rejects_non_positive_k(tmp_path, k):
 def test_rrf_k_is_validated_on_construction(tmp_path):
     with pytest.raises(ValueError):
         RAG(HashEmbedder(), MemoryStore(), ExtractiveGenerator(), rrf_k=-1)
+
+
+def test_retrieve_rejects_invalid_per_query_mode(tmp_path):
+    rag = _rag(tmp_path, "hybrid", BlindEmbedder())
+    _ingest_corpus(rag)
+    with pytest.raises(ValueError, match="mode must be one of"):
+        rag.retrieve("ZX-4471", mode="semantic")
+
+
+def test_retrieval_mode_can_be_overridden_per_query(tmp_path):
+    rag = _rag(tmp_path, "hybrid", BlindEmbedder())
+    _ingest_corpus(rag)
+    question = "What does ZX-4471 mean?"
+    default_answer = rag.ask(question)
+
+    assert rag.retrieve(question, mode="vector")[0].chunk.source != "rare.txt"
+    assert rag.retrieve(question, mode="keyword")[0].chunk.source == "rare.txt"
+    assert rag.ask(question, mode="keyword").citations[0].source == "rare.txt"
+    events = list(rag.ask_stream(question, mode="keyword"))
+    assert isinstance(events[-1], Done)
+    assert events[-1].answer.citations[0].source == "rare.txt"
+    assert rag.ask(question).citations == default_answer.citations
+    assert rag.retrieval_mode == "hybrid"

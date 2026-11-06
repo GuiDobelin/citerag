@@ -101,7 +101,7 @@ def test_ask_reports_mid_stream_errors_in_red_and_exits_1(use_rag):
     assert result.exit_code == 1
     assert result.stdout == "Partial answer\n"
     assert "Claude rate limit reached." in result.stderr
-    assert "\x1b[31m" in result.stderr  # red
+    assert "\x1b[31m" in result.stderr
 
 
 def test_ask_fails_if_the_stream_ends_without_an_answer(use_rag):
@@ -129,7 +129,6 @@ def test_ask_streaming_prints_sources_once(use_rag):
 
 
 def test_ask_has_a_documented_no_stream_flag():
-    # Inspect the click command: rendered help is coloured by Rich on CI, splitting the text.
     ask = typer.main.get_command(app).commands["ask"]
     option = next(p for p in ask.params if p.name == "stream")
     assert option.secondary_opts == ["--no-stream"] and option.default is True
@@ -149,3 +148,39 @@ def test_ask_strips_terminal_escape_sequences(use_rag, stream):
 def test_ask_rejects_non_positive_top_k(use_rag):
     result = runner.invoke(app, ["ask", "Lisbon?", "--top-k", "0"])
     assert result.exit_code != 0
+
+
+def test_ask_accepts_per_query_mode_and_rejects_invalid(use_rag):
+    calls = []
+    original_ask = use_rag.ask
+
+    def recording_ask(question, k=None, doc_ids=None, mode=None):
+        calls.append(mode)
+        return original_ask(question, k, doc_ids, mode)
+
+    use_rag.ask = recording_ask
+    result = runner.invoke(
+        app, ["ask", "Which city hosts Web Summit?", "--mode", "keyword", "--no-stream"]
+    )
+    assert result.exit_code == 0
+    assert calls == ["keyword"]
+    assert use_rag.retrieval_mode == "hybrid"
+
+    invalid = runner.invoke(app, ["ask", "question", "--mode", "semantic"])
+    assert invalid.exit_code != 0
+    assert invalid.exit_code == 2
+
+
+def test_ask_streaming_forwards_per_query_mode(use_rag):
+    calls = []
+    original_ask_stream = use_rag.ask_stream
+
+    def recording_ask_stream(question, k=None, doc_ids=None, mode=None):
+        calls.append(mode)
+        return original_ask_stream(question, k, doc_ids, mode)
+
+    use_rag.ask_stream = recording_ask_stream
+    result = _ask("--mode", "keyword")
+    assert result.exit_code == 0
+    assert calls == ["keyword"]
+    assert use_rag.retrieval_mode == "hybrid"

@@ -131,22 +131,33 @@ class RAG:
             return deleted
 
     def retrieve(
-        self, question: str, k: int | None = None, doc_ids: list[str] | None = None
+        self,
+        question: str,
+        k: int | None = None,
+        doc_ids: list[str] | None = None,
+        mode: RetrievalMode | None = None,
     ) -> list[Hit]:
         k = self.top_k if k is None else k
         if k < 1:
             raise ValueError("k must be >= 1.")
+        selected_mode = self.retrieval_mode if mode is None else mode
+        if selected_mode not in RETRIEVAL_MODES:
+            raise ValueError(f"mode must be one of {', '.join(RETRIEVAL_MODES)}.")
         if self.reranker is None:
-            return self._first_stage(question, k, doc_ids)
+            return self._first_stage(question, k, doc_ids, selected_mode)
         # The reranker always sees at least `k` candidates, so it can fill the requested `k`.
-        candidates = self._first_stage(question, max(k, self.rerank_candidates), doc_ids)
+        candidates = self._first_stage(
+            question, max(k, self.rerank_candidates), doc_ids, selected_mode
+        )
         return rerank(self.reranker, question, candidates, k)
 
-    def _first_stage(self, question: str, k: int, doc_ids: list[str] | None) -> list[Hit]:
-        if self.retrieval_mode == "keyword":
+    def _first_stage(
+        self, question: str, k: int, doc_ids: list[str] | None, mode: RetrievalMode
+    ) -> list[Hit]:
+        if mode == "keyword":
             return self._keywords().search(question, k, doc_ids)
         vector = self.embedder.embed([question])[0]
-        if self.retrieval_mode == "vector":
+        if mode == "vector":
             return self.store.search(vector, k, doc_ids)
         pool = k * CANDIDATE_FACTOR
         rankings = [
@@ -155,17 +166,27 @@ class RAG:
         ]
         return rrf_fuse(rankings, k=self.rrf_k, limit=k)
 
-    def ask(self, question: str, k: int | None = None, doc_ids: list[str] | None = None) -> Answer:
-        return self.generator.generate(question, self.retrieve(question, k, doc_ids))
+    def ask(
+        self,
+        question: str,
+        k: int | None = None,
+        doc_ids: list[str] | None = None,
+        mode: RetrievalMode | None = None,
+    ) -> Answer:
+        return self.generator.generate(question, self.retrieve(question, k, doc_ids, mode))
 
     def ask_stream(
-        self, question: str, k: int | None = None, doc_ids: list[str] | None = None
+        self,
+        question: str,
+        k: int | None = None,
+        doc_ids: list[str] | None = None,
+        mode: RetrievalMode | None = None,
     ) -> Iterator[StreamEvent]:
         """Like `ask`, but yields the answer as it is generated. The last event is `Done`.
 
         Retrieval runs before this returns, so its errors surface here rather than mid-stream.
         """
-        hits = self.retrieve(question, k, doc_ids)
+        hits = self.retrieve(question, k, doc_ids, mode)
         return self.generator.stream(question, hits)
 
     def _keywords(self) -> BM25Index:
