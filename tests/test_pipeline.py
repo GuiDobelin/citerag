@@ -16,6 +16,18 @@ def test_ingest_and_ask_returns_cited_answer(rag):
     assert "Web Summit" in answer.answer
 
 
+@pytest.mark.parametrize("suffix", [".markdown", ".rst", ".csv", ".json"])
+def test_new_plain_text_formats_are_indexed_with_source_citations(rag, suffix):
+    filename = "lisbon" + suffix
+    document = rag.ingest(filename, LISBON.encode("utf-8"))
+    answer = rag.ask("Which city hosts Web Summit?")
+    assert document.source == filename
+    assert document.chunks > 0
+    assert answer.citations[0].source == filename
+    assert answer.citations[0].page is None
+    assert "Web Summit" in answer.answer
+
+
 def test_reingesting_same_file_does_not_duplicate(rag):
     first = rag.ingest("lisbon.txt", LISBON.encode())
     second = rag.ingest("lisbon.txt", LISBON.encode())

@@ -9,7 +9,18 @@ from xml.etree import ElementTree
 
 from pypdf import PdfReader
 
-SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md", ".html", ".htm", ".docx"}
+SUPPORTED_SUFFIXES = {
+    ".pdf",
+    ".txt",
+    ".md",
+    ".html",
+    ".htm",
+    ".docx",
+    ".markdown",
+    ".rst",
+    ".csv",
+    ".json",
+}
 
 # Limits for the body of a DOCX file, which is untrusted input. A small ZIP can expand into a huge
 # XML file (a "ZIP bomb"), and a parsed element costs far more memory than its bytes, so both the

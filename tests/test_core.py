@@ -36,6 +36,15 @@ def test_loader_rejects_unknown_type():
         loaders.load("image.png", b"\x89PNG")
 
 
+@pytest.mark.parametrize("suffix", [".markdown", ".rst", ".csv", ".json"])
+@pytest.mark.parametrize("uppercase", [False, True])
+def test_plain_text_formats_preserve_contents_without_page_numbers(suffix, uppercase):
+    suffix = suffix.upper() if uppercase else suffix
+    content = 'Café, "éclair"\n{"tag": "literal"}\n'
+    assert loaders.load("notes" + suffix, content.encode("utf-8")) == [(None, content)]
+    assert loaders.load("empty" + suffix, b" \n\t") == []
+
+
 def test_hash_embedder_is_normalised_and_similarity_makes_sense():
     e = HashEmbedder()
     v = e.embed(["capital of Portugal", LISBON, BERLIN])
