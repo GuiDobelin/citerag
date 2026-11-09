@@ -1,7 +1,6 @@
 """Okapi BM25 keyword index over chunks, the lexical half of hybrid search."""
 
 import math
-import re
 import threading
 import unicodedata
 from collections import Counter, defaultdict
@@ -9,22 +8,48 @@ from collections.abc import Iterable
 
 from citerag.models import Chunk, Hit
 
-# Chinese and Japanese are written without spaces, so each ideograph or kana is a token.
-_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
-_TOKEN = re.compile(rf"[{_CJK}]|[^\W{_CJK}]+")
-# Accents are only stripped from Latin, Greek and Cyrillic letters; in scripts such as
-# Devanagari or Thai the combining marks are vowels and change the word.
-_FOLDABLE_BELOW = 0x0530
+
+# Japanese kana and CJK ideographs are indexed one character at a time.
+def _is_cjk(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x3040 <= cp <= 0x30FF
+        or 0x3400 <= cp <= 0x4DBF
+        or 0x4E00 <= cp <= 0x9FFF
+        or 0xF900 <= cp <= 0xFAFF
+    )
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase, strip accents (so "ação" matches "acao") and split into word tokens."""
-    kept: list[str] = []
+    """Case-fold, fold Latin/Greek/Cyrillic accents, and retain word marks."""
+    tokens: list[str] = []
+    word: list[str] = []
+    cjk = False
+    base = ""
+
+    def flush() -> None:
+        if word:
+            tokens.append(unicodedata.normalize("NFC", "".join(word)))
+            word.clear()
+
     for ch in unicodedata.normalize("NFKD", text.casefold()):
-        if unicodedata.combining(ch) and kept and ord(kept[-1]) < _FOLDABLE_BELOW:
-            continue
-        kept.append(ch)
-    return _TOKEN.findall(unicodedata.normalize("NFC", "".join(kept)))
+        if unicodedata.category(ch).startswith("M"):
+            if word and base and ord(base) >= 0x0530:
+                word.append(ch)
+        elif _is_cjk(ch):
+            flush()
+            word.append(ch)
+            base, cjk = ch, True
+        elif ch.isalnum() or ch == "_":
+            if cjk:
+                flush()
+            word.append(ch)
+            base, cjk = ch, False
+        else:
+            flush()
+            base, cjk = "", False
+    flush()
+    return tokens
 
 
 class BM25Index:

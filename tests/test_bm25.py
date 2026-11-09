@@ -150,3 +150,26 @@ def test_concurrent_adds_are_safe():
         t.join()
     assert len(idx) == 400
     assert len(idx.search("shared", k=1000)) == 400
+
+
+def test_combining_marks_remain_in_words_and_kana():
+    assert tokenize("किताब") == ["किताब"]
+    assert tokenize("がか") == ["が", "か"]
+    assert tokenize("が") != tokenize("か")
+    assert len(tokenize("กำลัง")) == 1
+    assert tokenize("กำลัง") != tokenize("กาลง")
+    assert tokenize("CAFÉ Ελλάδα Й") == ["cafe", "ελλαδα", "и"]
+
+
+def test_combining_marks_affect_keyword_search():
+    idx = BM25Index()
+    idx.add(
+        [
+            _chunk("book:0", "किताब"),
+            _chunk("other:0", "किता"),
+            _chunk("voiced:0", "が"),
+            _chunk("plain:0", "か"),
+        ]
+    )
+    assert [h.chunk.id for h in idx.search("किताब", k=10)] == ["book:0"]
+    assert [h.chunk.id for h in idx.search("が", k=10)] == ["voiced:0"]
