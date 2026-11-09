@@ -101,7 +101,7 @@ def test_ask_reports_mid_stream_errors_in_red_and_exits_1(use_rag):
     assert result.exit_code == 1
     assert result.stdout == "Partial answer\n"
     assert "Claude rate limit reached." in result.stderr
-    assert "\x1b[31m" in result.stderr
+    assert "\x1b[31m" in result.stderr  # red
 
 
 def test_ask_fails_if_the_stream_ends_without_an_answer(use_rag):
@@ -129,6 +129,7 @@ def test_ask_streaming_prints_sources_once(use_rag):
 
 
 def test_ask_has_a_documented_no_stream_flag():
+    # Inspect the click command: rendered help is coloured by Rich on CI, splitting the text.
     ask = typer.main.get_command(app).commands["ask"]
     option = next(p for p in ask.params if p.name == "stream")
     assert option.secondary_opts == ["--no-stream"] and option.default is True
@@ -167,7 +168,6 @@ def test_ask_accepts_per_query_mode_and_rejects_invalid(use_rag):
     assert use_rag.retrieval_mode == "hybrid"
 
     invalid = runner.invoke(app, ["ask", "question", "--mode", "semantic"])
-    assert invalid.exit_code != 0
     assert invalid.exit_code == 2
 
 
