@@ -1,6 +1,7 @@
 """Turn uploaded files into (page, text) pairs."""
 
 import io
+import re
 import zipfile
 import zlib
 from html.parser import HTMLParser
@@ -47,25 +48,127 @@ class InvalidFileError(ValueError):
     """The file has a supported type but its content can't be read."""
 
 
+class _CharsetExtractor(HTMLParser):
+    """Read HTML encoding declarations without decoding the document's text first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.charset: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta" or self.charset:
+            return
+        attrs = dict(attrs)
+        self.charset = attrs.get("charset")
+        if not self.charset and (attrs.get("http-equiv") or "").lower() == "content-type":
+            match = re.search(r"charset\s*=\s*([^;\s]+)", attrs.get("content") or "", re.I)
+            if match:
+                self.charset = match[1].strip("\"'")
+
+
+def _decode_html(data: bytes) -> str:
+    parser = _CharsetExtractor()
+    # Encoding declarations belong at the start of an HTML document. Latin-1 preserves all
+    # ASCII markup while allowing us to inspect a bounded prefix of arbitrary input bytes.
+    parser.feed(data[:4096].decode("latin-1"))
+    try:
+        return data.decode(parser.charset or "utf-8-sig", errors="replace")
+    except (LookupError, UnicodeError):
+        # Unknown labels and non-text codecs must not prevent an otherwise readable upload.
+        return data.decode("utf-8-sig", errors="replace")
+
+
 class _TextExtractor(HTMLParser):
-    _skip = {"script", "style", "noscript"}
+    _skip = {
+        "script",
+        "style",
+        "noscript",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "form",
+        "template",
+        "svg",
+        "iframe",
+    }
+    _blocks = {
+        "p",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "div",
+        "tr",
+        "br",
+        "main",
+        "article",
+        "section",
+        "blockquote",
+        "pre",
+        "ul",
+        "ol",
+        "dl",
+        "dt",
+        "dd",
+    }
 
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
-        self._depth = 0
+        self._main: list[str] = []
+        self._article: list[str] = []
+        self._stack: list[tuple[str, int, int, int]] = []
+        self._skip_depth = self._main_depth = self._article_depth = 0
+        self._has_main = self._has_article = False
+
+    def _append(self, text: str) -> None:
+        if self._skip_depth:
+            return
+        self.parts.append(text)
+        if self._main_depth:
+            self._main.append(text)
+        if self._article_depth:
+            self._article.append(text)
 
     def handle_starttag(self, tag, attrs):
-        if tag in self._skip:
-            self._depth += 1
+        if tag in self._skip or tag in {"main", "article"}:
+            self._stack.append((tag, self._skip_depth, self._main_depth, self._article_depth))
+            if tag in self._skip:
+                self._skip_depth += 1
+            elif not self._skip_depth:
+                if tag == "main":
+                    self._main_depth += 1
+                    self._has_main = True
+                else:
+                    self._article_depth += 1
+                    self._has_article = True
+        if tag in self._blocks:
+            self._append("\n")
 
     def handle_endtag(self, tag):
-        if tag in self._skip and self._depth:
-            self._depth -= 1
+        if tag in self._blocks:
+            self._append("\n")
+        # Track only content regions and skipped elements. Closing an enclosing region also
+        # closes unclosed tracked children, so malformed inline markup cannot leak selection.
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i][0] == tag:
+                _, self._skip_depth, self._main_depth, self._article_depth = self._stack[i]
+                del self._stack[i:]
+                break
 
     def handle_data(self, data):
-        if not self._depth and data.strip():
-            self.parts.append(data.strip())
+        if data.strip():
+            self._append(" ".join(data.split()) + " ")
+
+    def text(self) -> str:
+        parts = self._main if self._has_main else self._article if self._has_article else self.parts
+        return "\n".join(
+            line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))
+        )
 
 
 def _read_member(archive: zipfile.ZipFile, name: str) -> bytes:
@@ -231,9 +334,12 @@ def load(filename: str, data: bytes) -> list[tuple[int | None, str]]:
         text = _docx_text(data)
         return [(None, text)] if text.strip() else []
 
-    text = data.decode("utf-8", errors="replace")
     if suffix in {".html", ".htm"}:
+        text = _decode_html(data)
         parser = _TextExtractor()
         parser.feed(text)
-        text = "\n".join(parser.parts)
+        parser.close()
+        text = parser.text()
+    else:
+        text = data.decode("utf-8", errors="replace")
     return [(None, text)] if text.strip() else []
