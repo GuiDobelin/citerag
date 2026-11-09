@@ -8,6 +8,8 @@ from citerag import loaders
 from citerag.api import create_app, get_rag
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+STRICT_NS = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 
 
 def para(*runs: str) -> str:
@@ -26,15 +28,26 @@ def table(*rows: list[str]) -> str:
     return "<w:tbl>" + "".join(cells) + "</w:tbl>"
 
 
-def make_docx(body: str, *, prolog: str = "") -> bytes:
+def make_docx(
+    body: str,
+    *,
+    prolog: str = "",
+    ns: str = W_NS,
+    part: str = "word/document.xml",
+    rels: str | None = None,
+    encoding: str = "UTF-8",
+) -> bytes:
     xml = (
-        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{prolog}'
-        f'<w:document xmlns:w="{W_NS}"><w:body>{body}<w:sectPr/></w:body></w:document>'
+        f'<?xml version="1.0" encoding="{encoding}" standalone="yes"?>{prolog}'
+        f'<w:document xmlns:w="{ns}" xmlns:mc="{MC_NS}">'
+        f"<w:body>{body}<w:sectPr/></w:body></w:document>"
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", "<Types/>")
-        zf.writestr("word/document.xml", xml)
+        if rels is not None:
+            zf.writestr("_rels/.rels", rels)
+        zf.writestr(part, xml.encode(encoding))
     return buf.getvalue()
 
 
@@ -125,18 +138,84 @@ def test_docx_size_limit(monkeypatch):
         loaders.load("big.docx", data)
 
 
-def test_docx_size_limit_ignores_lying_header(monkeypatch):
+def test_docx_size_header_that_lies_is_corrupt():
     data = bytearray(make_docx(para(text("x" * 2000))))
-    # Patch the uncompressed size in the central directory entry to claim a tiny file.
-    with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
-        info = zf.getinfo("word/document.xml")
+    # Patch the uncompressed size in the central directory entry to claim a tiny file. zipfile
+    # stops at the declared size and the CRC check fails, so this is reported as corrupt.
     cd = data.rfind(b"PK\x01\x02", 0, data.rfind(b"word/document.xml"))
     data[cd + 24 : cd + 28] = (10).to_bytes(4, "little")
     with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
-        assert zf.getinfo("word/document.xml").file_size == 10 < info.file_size
-    monkeypatch.setattr(loaders, "MAX_DOCX_XML_BYTES", 1000)
-    with pytest.raises(loaders.InvalidFileError):
+        assert zf.getinfo("word/document.xml").file_size == 10
+    with pytest.raises(loaders.InvalidFileError, match="Corrupt"):
         loaders.load("liar.docx", bytes(data))
+
+
+def test_docx_element_limit(monkeypatch):
+    monkeypatch.setattr(loaders, "MAX_DOCX_ELEMENTS", 50)
+    data = make_docx("".join(para(text(str(i))) for i in range(30)))
+    with pytest.raises(loaders.InvalidFileError, match="too many"):
+        loaders.load("many.docx", data)
+
+
+def test_docx_text_box_read_once_on_its_own_line():
+    box = f"<w:txbxContent>{para(text('Confidential'))}</w:txbxContent>"
+    alternate = (
+        f"<mc:AlternateContent><mc:Choice Requires='wps'><w:drawing>{box}</w:drawing></mc:Choice>"
+        f"<mc:Fallback><w:pict>{box}</w:pict></mc:Fallback></mc:AlternateContent>"
+    )
+    data = make_docx(para(text("Body text"), alternate))
+    assert load_text(data) == "Body text\nConfidential"
+
+
+def test_docx_table_rows_and_cells_inside_content_controls():
+    cell = f"<w:tc>{para(text('Pro'))}</w:tc>"
+    wrapped_cell = f"<w:sdt><w:sdtContent><w:tc>{para(text('20'))}</w:tc></w:sdtContent></w:sdt>"
+    row = f"<w:tr>{cell}{wrapped_cell}</w:tr>"
+    tbl = f"<w:tbl><w:tr>{cell}</w:tr><w:sdt><w:sdtContent>{row}</w:sdtContent></w:sdt></w:tbl>"
+    assert load_text(make_docx(tbl)) == "Pro\nPro | 20"
+
+
+def test_docx_nested_tables():
+    inner = table(["inner a", "inner b"])
+    outer = f"<w:tbl><w:tr><w:tc>{para(text('outer'))}{inner}</w:tc></w:tr></w:tbl>"
+    assert load_text(make_docx(outer)) == "outer inner a | inner b"
+
+
+def test_docx_deep_nesting_is_rejected_not_a_crash():
+    depth = 5000
+    body = "<w:sdt><w:sdtContent>" * depth + para(text("x")) + "</w:sdtContent></w:sdt>" * depth
+    with pytest.raises(loaders.InvalidFileError, match="nested"):
+        loaders.load("deep.docx", make_docx(body))
+
+
+def test_docx_rejects_utf16_dtd():
+    bomb = '<!DOCTYPE w:document [<!ENTITY a "aaaaaaaaaa">]>'
+    data = make_docx(para(text("&a;")), prolog=bomb, encoding="UTF-16")
+    with pytest.raises(loaders.InvalidFileError, match="DTD"):
+        loaders.load("bomb.docx", data)
+
+
+def test_docx_utf16_without_dtd_loads():
+    assert load_text(make_docx(para(text("olá")), encoding="UTF-16")) == "olá"
+
+
+def test_docx_strict_ooxml_namespace():
+    assert load_text(make_docx(para(text("strict")), ns=STRICT_NS)) == "strict"
+
+
+def test_docx_main_part_from_relationships():
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Target="/word/document2.xml" Type="http://schemas.'
+        'openxmlformats.org/officeDocument/2006/relationships/officeDocument"/></Relationships>'
+    )
+    data = make_docx(para(text("renamed")), part="word/document2.xml", rels=rels)
+    assert load_text(data) == "renamed"
+
+
+def test_docx_unexpected_root_namespace():
+    with pytest.raises(loaders.InvalidFileError, match="Not a Word document"):
+        loaders.load("odd.docx", make_docx(para(text("x")), ns="urn:other"))
 
 
 def test_api_accepts_docx_and_rejects_corrupt(rag):

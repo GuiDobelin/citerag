@@ -11,11 +11,21 @@ from pypdf import PdfReader
 
 SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md", ".html", ".htm", ".docx"}
 
-# Upper bound for the uncompressed body of a DOCX file, so a small ZIP can't expand into gigabytes
-# of XML (a "ZIP bomb"). Documents of several hundred pages stay well below this.
-MAX_DOCX_XML_BYTES = 50 * 1024 * 1024
+# Limits for the body of a DOCX file, which is untrusted input. A small ZIP can expand into a huge
+# XML file (a "ZIP bomb"), and a parsed element costs far more memory than its bytes, so both the
+# size and the number of elements are capped. A 300-page report is around 5 MB and 150k elements.
+MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
+MAX_DOCX_ELEMENTS = 1_000_000
+# Real documents nest a handful of levels (tables in tables, content controls, text boxes).
+MAX_DOCX_DEPTH = 64
 
-_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# Transitional and Strict OOXML namespaces for WordprocessingML.
+_W_NAMESPACES = (
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "http://purl.oclc.org/ooxml/wordprocessingml/main",
+)
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+_DEFAULT_MAIN_PART = "word/document.xml"
 
 
 class UnsupportedFileError(ValueError):
@@ -47,73 +57,149 @@ class _TextExtractor(HTMLParser):
             self.parts.append(data.strip())
 
 
+def _read_member(archive: zipfile.ZipFile, name: str) -> bytes:
+    info = archive.getinfo(name)
+    if info.file_size > MAX_DOCX_XML_BYTES:
+        raise InvalidFileError("Word document body is too large to index.")
+    # zipfile stops at the declared size and checks the CRC, so a header that understates the size
+    # fails as corrupt. The bounded read keeps the cap independent of that behaviour.
+    with archive.open(info) as member:
+        data = member.read(MAX_DOCX_XML_BYTES + 1)
+    if len(data) > MAX_DOCX_XML_BYTES:
+        raise InvalidFileError("Word document body is too large to index.")
+    return data
+
+
+def _main_part_name(archive: zipfile.ZipFile) -> str:
+    """The main document part named in _rels/.rels, falling back to the usual word/document.xml."""
+    try:
+        rels = _parse_xml(_read_member(archive, "_rels/.rels"))
+    except (KeyError, InvalidFileError):
+        return _DEFAULT_MAIN_PART
+    for rel in rels:
+        if rel.get("Type", "").endswith("/officeDocument") and rel.get("Target"):
+            return rel.get("Target").lstrip("/")
+    return _DEFAULT_MAIN_PART
+
+
 def _docx_xml(data: bytes) -> bytes:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            name = _main_part_name(archive)
             try:
-                info = archive.getinfo("word/document.xml")
+                return _read_member(archive, name)
             except KeyError:
-                raise InvalidFileError(
-                    "Not a Word document: 'word/document.xml' is missing."
-                ) from None
-            # The size in the ZIP header can lie, so also cap what is actually decompressed.
-            if info.file_size > MAX_DOCX_XML_BYTES:
-                raise InvalidFileError("Word document body is too large to index.")
-            with archive.open(info) as body:
-                xml = body.read(MAX_DOCX_XML_BYTES + 1)
+                raise InvalidFileError(f"Not a Word document: '{name}' is missing.") from None
     except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as exc:
         raise InvalidFileError(f"Corrupt or unreadable DOCX file: {exc}") from exc
-    if len(xml) > MAX_DOCX_XML_BYTES:
-        raise InvalidFileError("Word document body is too large to index.")
-    return xml
 
 
-def _paragraph_text(paragraph: ElementTree.Element) -> str:
-    parts = []
-    # iter() also walks runs nested in hyperlinks, tracked insertions and fields. Deleted text is
-    # stored as w:delText and field codes as w:instrText, so neither is picked up.
-    for el in paragraph.iter():
-        if el.tag == f"{_W}t":
-            parts.append(el.text or "")
-        elif el.tag == f"{_W}tab":
-            parts.append("\t")
-        elif el.tag in (f"{_W}br", f"{_W}cr"):
-            parts.append("\n")
-        elif el.tag == f"{_W}noBreakHyphen":
-            parts.append("-")
-    return "".join(parts).strip()
+def _parse_xml(xml: bytes) -> ElementTree.Element:
+    # Word never writes a DTD; refusing one rules out entity-expansion tricks in the XML parser.
+    # expat also accepts UTF-16, so look for the marker in those encodings too.
+    if any("<!DOCTYPE".encode(enc) in xml for enc in ("utf-8", "utf-16-le", "utf-16-be")):
+        raise InvalidFileError("Word document XML contains a DTD, which is not allowed.")
+    parser = ElementTree.XMLPullParser(events=("start",))
+    root = None
+    count = 0
+    step = 1024 * 1024
+    try:
+        for offset in range(0, len(xml), step):
+            parser.feed(xml[offset : offset + step])
+            for _, el in parser.read_events():
+                root = el if root is None else root
+                count += 1
+            if count > MAX_DOCX_ELEMENTS:
+                raise InvalidFileError("Word document has too many XML elements to index.")
+        parser.close()
+    except ElementTree.ParseError as exc:
+        raise InvalidFileError(f"Corrupt DOCX file: {exc}") from exc
+    if root is None:
+        raise InvalidFileError("Corrupt DOCX file: empty XML.")
+    return root
 
 
-def _block_lines(container: ElementTree.Element) -> list[str]:
-    """Text of the paragraphs and tables in `container`, in document order, one line per block."""
-    lines = []
-    for el in container:
-        if el.tag == f"{_W}p":
-            text = _paragraph_text(el)
-            if text:
-                lines.append(text)
-        elif el.tag == f"{_W}tbl":
-            for row in el.findall(f"{_W}tr"):
-                cells = [" ".join(_block_lines(cell)) for cell in row.findall(f"{_W}tc")]
-                if any(cells):
-                    lines.append(" | ".join(cells))
-        else:
-            # Content controls (w:sdt/w:sdtContent), custom XML and similar wrappers.
-            lines.extend(_block_lines(el))
-    return lines
+class _DocxText:
+    """Collects the text of a WordprocessingML body, one line per paragraph or table row."""
+
+    def __init__(self, namespace: str) -> None:
+        w = f"{{{namespace}}}"
+        self.p, self.tbl, self.tr, self.tc = f"{w}p", f"{w}tbl", f"{w}tr", f"{w}tc"
+        self.t, self.tab, self.txbx = f"{w}t", f"{w}tab", f"{w}txbxContent"
+        self.breaks = {f"{w}br", f"{w}cr"}
+        self.hyphen = f"{w}noBreakHyphen"
+
+    @staticmethod
+    def _check_depth(depth: int) -> None:
+        if depth > MAX_DOCX_DEPTH:
+            raise InvalidFileError("Word document is nested too deeply to index.")
+
+    def blocks(self, container: ElementTree.Element, depth: int = 0) -> list[str]:
+        """Paragraphs and table rows in `container`, in document order."""
+        self._check_depth(depth)
+        lines = []
+        for el in container:
+            if el.tag == self.p:
+                lines.extend(self._paragraph(el, depth + 1))
+            elif el.tag == self.tbl:
+                for row in self._find(el, self.tr, depth + 1):
+                    cells = [
+                        " ".join(self.blocks(cell, depth + 2))
+                        for cell in self._find(row, self.tc, depth + 1)
+                    ]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+            elif el.tag != _MC_FALLBACK:
+                # Content controls (w:sdt/w:sdtContent), custom XML and similar wrappers.
+                lines.extend(self.blocks(el, depth + 1))
+        return lines
+
+    def _find(self, el: ElementTree.Element, tag: str, depth: int) -> list[ElementTree.Element]:
+        """Children with `tag`, looking through wrappers such as content controls around rows."""
+        self._check_depth(depth)
+        found = []
+        for child in el:
+            if child.tag == tag:
+                found.append(child)
+            elif child.tag not in (self.tbl, _MC_FALLBACK):
+                found.extend(self._find(child, tag, depth + 1))
+        return found
+
+    def _paragraph(self, paragraph: ElementTree.Element, depth: int) -> list[str]:
+        parts: list[str] = []
+        boxes: list[str] = []
+        self._inline(paragraph, parts, boxes, depth)
+        text = "".join(parts).strip()
+        return ([text] if text else []) + boxes
+
+    def _inline(self, el: ElementTree.Element, parts: list[str], boxes: list[str], depth: int):
+        # Walks runs nested in hyperlinks, tracked insertions and fields. Deleted text is stored as
+        # w:delText and field codes as w:instrText, so neither is picked up. Text boxes become lines
+        # of their own, and only the preferred mc:Choice copy of alternate content is read.
+        self._check_depth(depth)
+        for child in el:
+            tag = child.tag
+            if tag == self.t:
+                parts.append(child.text or "")
+            elif tag == self.tab:
+                parts.append("\t")
+            elif tag in self.breaks:
+                parts.append("\n")
+            elif tag == self.hyphen:
+                parts.append("-")
+            elif tag == self.txbx:
+                boxes.extend(self.blocks(child, depth + 1))
+            elif tag != _MC_FALLBACK:
+                self._inline(child, parts, boxes, depth + 1)
 
 
 def _docx_text(data: bytes) -> str:
-    xml = _docx_xml(data)
-    # Word never writes a DTD; refusing one rules out entity-expansion tricks in the XML parser.
-    if b"<!DOCTYPE" in xml:
-        raise InvalidFileError("Word document body contains a DTD, which is not allowed.")
-    try:
-        root = ElementTree.fromstring(xml)
-    except ElementTree.ParseError as exc:
-        raise InvalidFileError(f"Corrupt DOCX file: {exc}") from exc
-    body = root.find(f"{_W}body")
-    return "\n".join(_block_lines(body)) if body is not None else ""
+    root = _parse_xml(_docx_xml(data))
+    namespace = root.tag[1:].partition("}")[0]
+    if namespace not in _W_NAMESPACES:
+        raise InvalidFileError("Not a Word document: unexpected main document XML.")
+    body = root.find(f"{{{namespace}}}body")
+    return "\n".join(_DocxText(namespace).blocks(body)) if body is not None else ""
 
 
 def load(filename: str, data: bytes) -> list[tuple[int | None, str]]:
