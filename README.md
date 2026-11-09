@@ -48,6 +48,8 @@ docker compose up --build
 ```
 
 The API is now at http://localhost:8000, with interactive docs at http://localhost:8000/docs.
+Supported uploads are PDF, DOCX, Markdown, plain text and HTML. For Word files, the body text,
+tables and text boxes are indexed; headers, footers, footnotes and comments are not (yet).
 
 ```bash
 curl -F "file=@contract.pdf" http://localhost:8000/documents
