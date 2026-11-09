@@ -6,9 +6,10 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-citerag is a self-hostable retrieval-augmented generation (RAG) service. Upload PDFs, Markdown,
-text or HTML files, then ask questions over HTTP or from the command line. Every answer points
-to the exact passage, file and page it came from, so you can verify it instead of trusting it.
+citerag is a self-hostable retrieval-augmented generation (RAG) service. Upload PDFs, Word (DOCX),
+Markdown, text or HTML files, then ask questions over HTTP or from the command line. Every
+answer points to the exact passage, file and page it came from, so you can verify it instead of
+trusting it.
 
 ```text
 $ citerag ask "What notice period does the contract require?"
@@ -188,10 +189,10 @@ All settings are environment variables (or entries in `.env`).
 ## How it works
 
 ```text
-upload ─▶ load (PDF/MD/TXT/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
-                                           └▶ BM25 keyword index ────────────┤
-                                                                             │
-question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀─────┘
+upload ─▶ load (PDF/DOCX/MD/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
+                                            └▶ BM25 keyword index ────────────┤
+                                                                              │
+question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀──────┘
                                                             │
                                                             ▼
           Claude (each chunk sent as a citable document) ─▶ answer + quotes
@@ -237,7 +238,8 @@ it instead of duplicating it.
 - [x] Streaming answers (SSE)
 - [ ] API keys and per-tenant collections
 - [ ] Evaluation harness for retrieval quality
-- [ ] More loaders: DOCX, web crawling
+- [x] DOCX loader
+- [ ] Ingest web pages by URL
 
 Ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
