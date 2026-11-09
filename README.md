@@ -7,9 +7,9 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 citerag is a self-hostable retrieval-augmented generation (RAG) service. Upload PDFs, Word (DOCX),
-Markdown, text or HTML files, then ask questions over HTTP or from the command line. Every
-answer points to the exact passage, file and page it came from, so you can verify it instead of
-trusting it.
+Markdown (`.md`, `.markdown`), reStructuredText (`.rst`), CSV, JSON, text or HTML files, then ask
+questions over HTTP or from the command line. CSV and JSON are indexed as plain UTF-8 text. Every
+answer points to the exact passage, file and page it came from, so you can verify it.
 
 ```text
 $ citerag ask "What notice period does the contract require?"
@@ -191,7 +191,7 @@ All settings are environment variables (or entries in `.env`).
 ## How it works
 
 ```text
-upload ─▶ load (PDF/DOCX/MD/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
+upload ─▶ load (PDF/DOCX/text/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
                                             └▶ BM25 keyword index ────────────┤
                                                                               │
 question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀──────┘
