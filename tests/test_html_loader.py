@@ -129,3 +129,10 @@ def test_page_level_header_and_footer_are_skipped_without_regions():
 def test_form_wrapping_the_whole_page_is_indexed():
     html = b'<body><form id="form1"><h1>Title</h1><p>Body</p></form></body>'
     assert load("page.html", html) == [(None, "Title\nBody")]
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_utf16_bom_is_honoured(encoding):
+    bom = "﻿".encode(encoding)
+    html = bom + '<meta charset="windows-1252"><p>café</p>'.encode(encoding)
+    assert load("page.html", html) == [(None, "café")]
