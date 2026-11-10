@@ -198,9 +198,9 @@ All settings are environment variables (or entries in `.env`).
 
 ```text
 upload ─▶ load (PDF/DOCX/text/HTML) ─▶ chunk ─┬▶ embed (local) ─▶ vector store ─┐
-                                            └▶ BM25 keyword index ────────────┤
-                                                                              │
-question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀──────┘
+                                              └▶ BM25 keyword index ────────────┤
+                                                                                │
+question ─▶ vector + keyword search ─▶ RRF ─▶ (rerank) ─▶ top-k chunks ◀────────┘
                                                             │
                                                             ▼
           Claude (each chunk sent as a citable document) ─▶ answer + quotes
