@@ -9,6 +9,7 @@ from citerag.bm25 import BM25Index
 from citerag.chunking import split_text
 from citerag.config import Settings
 from citerag.embeddings import Embedder, FastEmbedEmbedder, HashEmbedder
+from citerag.fetch import Fetcher
 from citerag.fusion import DEFAULT_RRF_K, rrf_fuse
 from citerag.llm import ClaudeGenerator, ExtractiveGenerator, Generator
 from citerag.models import Answer, Chunk, DocumentInfo, Hit, RetrievalMode, StreamEvent
@@ -45,6 +46,7 @@ class RAG:
         rrf_k: int = DEFAULT_RRF_K,
         reranker: Reranker | None = None,
         rerank_candidates: int = 20,
+        fetcher: Fetcher | None = None,
     ) -> None:
         if retrieval_mode not in RETRIEVAL_MODES:
             raise ValueError(f"retrieval_mode must be one of {', '.join(RETRIEVAL_MODES)}.")
@@ -62,6 +64,7 @@ class RAG:
         self.rrf_k = rrf_k
         self.reranker = reranker
         self.rerank_candidates = rerank_candidates
+        self.fetcher = fetcher or Fetcher()
         # Guards the keyword index together with the store writes it mirrors.
         self._lock = threading.RLock()
         self._keyword_index: BM25Index | None = None
@@ -84,6 +87,11 @@ class RAG:
             else ClaudeGenerator(s.claude_model, s.claude_effort, s.max_answer_tokens)
         )
         reranker = FastEmbedReranker(s.rerank_model) if s.reranker == "fastembed" else None
+        fetcher = Fetcher(
+            max_bytes=s.max_upload_mb * 1024 * 1024,
+            allow_private=s.allow_private_urls,
+            timeout=s.url_timeout,
+        )
         return cls(
             embedder,
             store,
@@ -95,13 +103,27 @@ class RAG:
             rrf_k=s.rrf_k,
             reranker=reranker,
             rerank_candidates=s.rerank_candidates,
+            fetcher=fetcher,
         )
 
     def ingest(self, filename: str, data: bytes) -> DocumentInfo:
         """Index a file. Re-ingesting identical content replaces the previous copy."""
+        return self._ingest(filename, filename, data)
+
+    def ingest_url(self, url: str) -> DocumentInfo:
+        """Download and index a web page or document. The final URL becomes its `source`.
+
+        Raises `citerag.fetch.URLFetchError` (or its subclasses `BlockedURLError` and
+        `ResponseTooLargeError`) when the URL can't be fetched, and the same errors as `ingest`
+        for content that can't be indexed.
+        """
+        fetched = self.fetcher.fetch(url)
+        return self._ingest(fetched.url, fetched.filename, fetched.data)
+
+    def _ingest(self, source: str, filename: str, data: bytes) -> DocumentInfo:
         doc_id = hashlib.sha256(data).hexdigest()[:16]
         chunks = [
-            Chunk(id=f"{doc_id}:{n}", doc_id=doc_id, source=filename, page=page, text=text)
+            Chunk(id=f"{doc_id}:{n}", doc_id=doc_id, source=source, page=page, text=text)
             for n, (page, text) in enumerate(
                 (page, piece)
                 for page, page_text in loaders.load(filename, data)
@@ -109,7 +131,7 @@ class RAG:
             )
         ]
         if not chunks:
-            raise ValueError(f"No extractable text found in '{filename}'.")
+            raise ValueError(f"No extractable text found in '{source}'.")
         vectors = self.embedder.embed([c.text for c in chunks])
         with self._lock, self._resync_on_error():
             self.store.delete(doc_id)
@@ -117,7 +139,7 @@ class RAG:
             if self._keyword_index is not None:
                 self._keyword_index.delete(doc_id)
                 self._keyword_index.add(chunks)
-        return DocumentInfo(doc_id=doc_id, source=filename, chunks=len(chunks))
+        return DocumentInfo(doc_id=doc_id, source=source, chunks=len(chunks))
 
     def documents(self) -> list[DocumentInfo]:
         return self.store.documents()
