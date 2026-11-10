@@ -85,6 +85,9 @@ def test_is_public_address(ip, public):
         ("https://x.org/README", "text/markdown", "README.md"),
         ("https://x.org/report.docx", "application/octet-stream", "report.docx"),
         ("https://x.org/report.PDF", "", "report.pdf"),
+        ("https://x.org/export", "text/csv; charset=utf-8", "export.csv"),
+        ("https://x.org/api/items", "application/json", "items.json"),
+        ("https://x.org/index", "text/x-rst", "index.rst"),
     ],
 )
 def test_filename_for_prefers_content_type_then_suffix(url, content_type, expected):
@@ -452,3 +455,17 @@ def test_fetch_marks_reencoded_html_with_a_bom():
         )
 
     assert make_fetcher(handler).fetch("https://example.com/").data == "\ufeffé".encode()
+
+
+def test_ingest_url_reencodes_csv_charset(rag):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/csv; charset=iso-8859-1"},
+            content="city,country\nSão Paulo,Brasil\n".encode("latin-1"),
+        )
+
+    rag.fetcher = make_fetcher(handler)
+    info = rag.ingest_url("https://example.com/cities")
+    assert info.source == "https://example.com/cities"
+    assert "São Paulo" in rag.store.chunks()[0].text

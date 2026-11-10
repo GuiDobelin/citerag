@@ -67,11 +67,19 @@ class _CharsetExtractor(HTMLParser):
                 self.charset = match[1].strip("\"'")
 
 
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+
 def _decode_html(data: bytes) -> str:
     # A byte order mark beats any <meta> declaration, as in browsers. The URL fetcher relies on
     # this to mark pages it has already re-encoded from the charset in the HTTP headers.
-    if data.startswith(codecs.BOM_UTF8):
-        return data[len(codecs.BOM_UTF8) :].decode("utf-8", errors="replace")
+    for bom, encoding in _BOMS:
+        if data.startswith(bom):
+            return data[len(bom) :].decode(encoding, errors="replace")
     parser = _CharsetExtractor()
     # Encoding declarations belong at the start of an HTML document. Latin-1 preserves all
     # ASCII markup while allowing us to inspect a bounded prefix of arbitrary input bytes.

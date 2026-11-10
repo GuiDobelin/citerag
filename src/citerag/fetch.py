@@ -36,10 +36,14 @@ _CONTENT_TYPES = {
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/x-markdown": ".md",
+    "text/x-rst": ".rst",
+    "text/csv": ".csv",
+    "application/json": ".json",
 }
 # Types that say nothing about the format, so the URL path suffix decides.
 _GENERIC_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
-_TEXT_SUFFIXES = {".html", ".htm", ".txt", ".md"}
+# Everything except the binary formats is text the loaders read as UTF-8.
+_TEXT_SUFFIXES = SUPPORTED_SUFFIXES - {".pdf", ".docx"}
 _REDIRECTS = {301, 302, 303, 307, 308}
 # NAT64 addresses embed an IPv4 address in their last 32 bits.
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
