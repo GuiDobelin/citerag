@@ -41,3 +41,7 @@ class Settings(BaseSettings):
 
     # API
     max_upload_mb: int = 25
+
+    # URL ingestion. Private, loopback and link-local addresses are refused unless allowed.
+    allow_private_urls: bool = False
+    url_timeout: float = Field(10.0, gt=0)
