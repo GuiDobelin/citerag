@@ -106,3 +106,8 @@ def test_html_ingestion_indexes_content_without_boilerplate(rag):
 def test_source_whitespace_does_not_split_a_paragraph():
     html = b"<p>Hello\n    <b>wide\nworld</b></p><p>Next paragraph</p>"
     assert load("page.html", html) == [(None, "Hello wide world\nNext paragraph")]
+
+
+def test_utf8_bom_wins_over_meta_charset():
+    html = '\ufeff<meta charset="windows-1252"><p>café</p>'.encode()
+    assert load("page.html", html) == [(None, "café")]

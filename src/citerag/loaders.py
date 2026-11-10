@@ -1,5 +1,6 @@
 """Turn uploaded files into (page, text) pairs."""
 
+import codecs
 import io
 import re
 import zipfile
@@ -67,6 +68,10 @@ class _CharsetExtractor(HTMLParser):
 
 
 def _decode_html(data: bytes) -> str:
+    # A byte order mark beats any <meta> declaration, as in browsers. The URL fetcher relies on
+    # this to mark pages it has already re-encoded from the charset in the HTTP headers.
+    if data.startswith(codecs.BOM_UTF8):
+        return data[len(codecs.BOM_UTF8) :].decode("utf-8", errors="replace")
     parser = _CharsetExtractor()
     # Encoding declarations belong at the start of an HTML document. Latin-1 preserves all
     # ASCII markup while allowing us to inspect a bounded prefix of arbitrary input bytes.
