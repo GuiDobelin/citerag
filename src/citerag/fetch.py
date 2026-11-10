@@ -8,6 +8,7 @@ later). Redirects are followed by hand so each hop goes through the same check.
 """
 
 import ipaddress
+import re
 import socket
 import time
 from collections.abc import Callable
@@ -16,12 +17,13 @@ from pathlib import PurePosixPath
 
 import httpx
 
+from citerag.config import Settings
 from citerag.loaders import SUPPORTED_SUFFIXES, UnsupportedFileError
 
 # (host, port) -> IP addresses as strings, like socket.getaddrinfo returns them.
 Resolver = Callable[[str, int], list[str]]
 
-DEFAULT_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_MAX_BYTES = Settings.model_fields["max_upload_mb"].default * 1024 * 1024
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_REDIRECTS = 5
 USER_AGENT = "citerag (+https://github.com/GuiDobelin/citerag)"
@@ -41,6 +43,8 @@ _TEXT_SUFFIXES = {".html", ".htm", ".txt", ".md"}
 _REDIRECTS = {301, 302, 303, 307, 308}
 # NAT64 addresses embed an IPv4 address in their last 32 bits.
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+# <meta charset="..."> or <meta http-equiv="Content-Type" content="text/html; charset=...">.
+_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
 
 
 class URLFetchError(ValueError):
@@ -65,6 +69,7 @@ class FetchedDocument:
 
 
 def system_resolver(host: str, port: int) -> list[str]:
+    # getaddrinfo can't be given a timeout; the OS resolver's own timeout (resolv.conf) applies.
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, UnicodeError) as exc:
@@ -114,8 +119,11 @@ def _size(n: int) -> str:
     return f"{n / (1024 * 1024):g} MB" if n >= 1024 * 1024 else f"{n} bytes"
 
 
-def _to_utf8(data: bytes, content_type: str) -> bytes:
-    """Re-encode text declared in another charset, since the loaders read text as UTF-8."""
+def _to_utf8(data: bytes, content_type: str, html: bool) -> bytes:
+    """Re-encode text declared in another charset, since the loaders read text as UTF-8.
+
+    The Content-Type header wins; HTML without one falls back to its <meta> declaration.
+    """
     params = content_type.split(";")[1:]
     charset = next(
         (
@@ -125,6 +133,8 @@ def _to_utf8(data: bytes, content_type: str) -> bytes:
         ),
         None,
     )
+    if not charset and html and (match := _META_CHARSET.search(data[:4096])):
+        charset = match.group(1).decode("ascii")
     if not charset or charset.lower().replace("_", "-") in {"utf-8", "utf8"}:
         return data
     try:
@@ -165,6 +175,8 @@ class Fetcher:
         self.transport = transport
 
     def fetch(self, url: str) -> FetchedDocument:
+        if not isinstance(url, str):
+            raise BlockedURLError(f"URL must be a string, not {type(url).__name__}.")
         try:
             current = httpx.URL(url.strip())
         except (httpx.InvalidURL, TypeError) as exc:
@@ -177,20 +189,23 @@ class Fetcher:
             trust_env=False,
         ) as client:
             for _ in range(self.max_redirects + 1):
-                response = self._open(client, current)
+                response = self._open(client, current, deadline)
                 try:
                     if response.status_code in _REDIRECTS and "location" in response.headers:
                         current = self._redirect_target(current, response.headers["location"])
                         continue
-                    if response.status_code >= 400:
+                    # Anything else that isn't 2xx (a 3xx without Location, 304, 4xx, 5xx)
+                    # carries no document worth indexing.
+                    if not 200 <= response.status_code < 300:
                         raise URLFetchError(f"{current} returned HTTP {response.status_code}.")
                     content_type = response.headers.get("content-type", "")
                     filename = filename_for(current, content_type)
                     data = self._read(response, deadline, current)
                 finally:
                     response.close()
-                if PurePosixPath(filename).suffix in _TEXT_SUFFIXES:
-                    data = _to_utf8(data, content_type)
+                suffix = PurePosixPath(filename).suffix
+                if suffix in _TEXT_SUFFIXES:
+                    data = _to_utf8(data, content_type, html=suffix in {".html", ".htm"})
                 return FetchedDocument(url=str(current), filename=filename, data=data)
         raise URLFetchError(f"Too many redirects (more than {self.max_redirects}).")
 
@@ -223,8 +238,12 @@ class Fetcher:
                 )
         return addresses[0]
 
-    def _open(self, client: httpx.Client, url: httpx.URL) -> httpx.Response:
+    def _open(self, client: httpx.Client, url: httpx.URL, deadline: float) -> httpx.Response:
         ip = self._check(url)
+        # Every hop shares one overall deadline, so a chain of slow redirects can't multiply it.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise URLFetchError(f"Timed out fetching {url}.")
         # Connect to the checked address, but send the real hostname in the Host header and in
         # TLS SNI so virtual hosts and certificate verification work as usual.
         pinned = url.copy_with(host=ip)
@@ -234,7 +253,11 @@ class Fetcher:
             "Accept": "text/html, application/pdf, text/plain, text/markdown, */*;q=0.5",
         }
         request = client.build_request(
-            "GET", pinned, headers=headers, extensions={"sni_hostname": _ascii_host(url)}
+            "GET",
+            pinned,
+            headers=headers,
+            timeout=remaining,
+            extensions={"sni_hostname": _ascii_host(url)},
         )
         try:
             return client.send(request, stream=True)
