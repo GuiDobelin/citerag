@@ -84,19 +84,20 @@ def _decode_html(data: bytes) -> str:
 
 
 class _TextExtractor(HTMLParser):
+    # <form> is not skipped: ASP.NET WebForms pages wrap the whole body in one.
     _skip = {
         "script",
         "style",
         "noscript",
         "nav",
-        "header",
-        "footer",
         "aside",
-        "form",
         "template",
         "svg",
         "iframe",
     }
+    # Site-wide chrome when on the page itself, but inside <main> or <article> a header holds
+    # the title and byline, and a footer the notes, so there they are kept.
+    _chrome = {"header", "footer"}
     _blocks = {
         "p",
         "li",
@@ -139,10 +140,16 @@ class _TextExtractor(HTMLParser):
         if self._article_depth:
             self._article.append(text)
 
+    def _skips(self, tag: str) -> bool:
+        if tag in self._chrome:
+            return not (self._main_depth or self._article_depth)
+        return tag in self._skip
+
     def handle_starttag(self, tag, attrs):
-        if tag in self._skip or tag in {"main", "article"}:
+        skip = self._skips(tag)
+        if skip or tag in {"main", "article"}:
             self._stack.append((tag, self._skip_depth, self._main_depth, self._article_depth))
-            if tag in self._skip:
+            if skip:
                 self._skip_depth += 1
             elif not self._skip_depth:
                 if tag == "main":
