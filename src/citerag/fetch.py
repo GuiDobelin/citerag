@@ -7,8 +7,8 @@ connects to the exact address it checked (pinning it, so DNS can't answer differ
 later). Redirects are followed by hand so each hop goes through the same check.
 """
 
+import codecs
 import ipaddress
-import re
 import socket
 import time
 from collections.abc import Callable
@@ -43,8 +43,6 @@ _TEXT_SUFFIXES = {".html", ".htm", ".txt", ".md"}
 _REDIRECTS = {301, 302, 303, 307, 308}
 # NAT64 addresses embed an IPv4 address in their last 32 bits.
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
-# <meta charset="..."> or <meta http-equiv="Content-Type" content="text/html; charset=...">.
-_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
 
 
 class URLFetchError(ValueError):
@@ -120,9 +118,11 @@ def _size(n: int) -> str:
 
 
 def _to_utf8(data: bytes, content_type: str, html: bool) -> bytes:
-    """Re-encode text declared in another charset, since the loaders read text as UTF-8.
+    """Re-encode text using the charset from the Content-Type header, since loaders read UTF-8.
 
-    The Content-Type header wins; HTML without one falls back to its <meta> declaration.
+    For HTML the header beats any <meta> declaration, so re-encoded pages start with a UTF-8 byte
+    order mark, which the HTML loader trusts over <meta>. HTML served without a header charset
+    is left as is for the loader to decode from its <meta> declaration.
     """
     params = content_type.split(";")[1:]
     charset = next(
@@ -133,14 +133,14 @@ def _to_utf8(data: bytes, content_type: str, html: bool) -> bytes:
         ),
         None,
     )
-    if not charset and html and (match := _META_CHARSET.search(data[:4096])):
-        charset = match.group(1).decode("ascii")
-    if not charset or charset.lower().replace("_", "-") in {"utf-8", "utf8"}:
+    if not charset:
         return data
     try:
-        return data.decode(charset, errors="replace").encode("utf-8")
-    except LookupError:
+        text = data.decode(charset, errors="replace")
+    except LookupError:  # unknown labels and non-text codecs such as base64
         return data
+    encoded = text.lstrip("\ufeff").encode("utf-8")
+    return codecs.BOM_UTF8 + encoded if html else encoded
 
 
 class Fetcher:

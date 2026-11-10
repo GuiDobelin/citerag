@@ -426,12 +426,29 @@ def test_fetch_deadline_covers_slow_body_and_redirect_chains(monkeypatch):
     assert clock[0] == 12  # three hops, then the deadline stops the fourth
 
 
-def test_fetch_uses_html_meta_charset_without_header_charset():
-    page = '<html><head><meta charset="windows-1252"></head><p>Café</p></html>'
+@pytest.mark.parametrize(
+    ("header", "meta", "encoding"),
+    [
+        ("text/html; charset=ISO-8859-1", "iso-8859-1", "latin-1"),  # header and meta agree
+        ("text/html", "windows-1252", "cp1252"),  # only <meta> says it
+        ("text/html; charset=utf-8", "windows-1252", "utf-8"),  # the header wins over <meta>
+    ],
+)
+def test_ingest_url_decodes_html_charset_once(rag, header, meta, encoding):
+    page = f'<html><head><meta charset="{meta}"></head><p>Café em São Paulo</p></html>'
 
     def handler(request):
+        return httpx.Response(200, headers={"content-type": header}, content=page.encode(encoding))
+
+    rag.fetcher = make_fetcher(handler)
+    rag.ingest_url("https://example.com/sp")
+    assert [c.text for c in rag.store.chunks()] == ["Café em São Paulo"]
+
+
+def test_fetch_marks_reencoded_html_with_a_bom():
+    def handler(request):
         return httpx.Response(
-            200, headers={"content-type": "text/html"}, content=page.encode("cp1252")
+            200, headers={"content-type": "text/html; charset=latin-1"}, content=b"\xe9"
         )
 
-    assert "Café" in make_fetcher(handler).fetch("https://example.com/").data.decode("utf-8")
+    assert make_fetcher(handler).fetch("https://example.com/").data == "\ufeffé".encode()
