@@ -13,7 +13,6 @@ from citerag.loaders import load
         "header",
         "footer",
         "aside",
-        "form",
         "template",
         "svg",
         "iframe",
@@ -111,3 +110,22 @@ def test_source_whitespace_does_not_split_a_paragraph():
 def test_utf8_bom_wins_over_meta_charset():
     html = '\ufeff<meta charset="windows-1252"><p>café</p>'.encode()
     assert load("page.html", html) == [(None, "café")]
+
+
+@pytest.mark.parametrize("region", ["main", "article"])
+def test_headers_and_footers_inside_content_regions_are_kept(region):
+    html = (
+        f"<header>Site menu</header><{region}><header><h1>Post title</h1></header>"
+        f"<p>Body</p><footer>Notes</footer></{region}><footer>Copyright</footer>"
+    )
+    assert load("page.html", html.encode()) == [(None, "Post title\nBody\nNotes")]
+
+
+def test_page_level_header_and_footer_are_skipped_without_regions():
+    html = b"<header>Site menu</header><p>Body</p><footer>Copyright</footer>"
+    assert load("page.html", html) == [(None, "Body")]
+
+
+def test_form_wrapping_the_whole_page_is_indexed():
+    html = b'<body><form id="form1"><h1>Title</h1><p>Body</p></form></body>'
+    assert load("page.html", html) == [(None, "Title\nBody")]
