@@ -358,3 +358,80 @@ def test_ingest_url_unsupported_content_type(rag):
     )
     with pytest.raises(UnsupportedFileError):
         rag.ingest_url("https://example.com/logo")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(302, text="moved, but no Location"),
+        httpx.Response(300, headers={"content-type": "text/html"}, text="<p>pick one</p>"),
+        httpx.Response(304),
+        httpx.Response(503),
+    ],
+)
+def test_fetch_rejects_non_2xx_responses(response):
+    with pytest.raises(URLFetchError, match=f"HTTP {response.status_code}"):
+        make_fetcher(lambda r: response).fetch("https://example.com/page")
+
+
+def test_fetch_rejects_non_string_url():
+    with pytest.raises(BlockedURLError):
+        make_fetcher(html_page).fetch(None)
+
+
+def test_fetch_wraps_timeouts():
+    def handler(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(URLFetchError, match="Timed out"):
+        make_fetcher(handler).fetch("https://example.com/")
+
+
+def test_fetch_passes_remaining_time_to_each_request():
+    timeouts = []
+
+    def handler(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        return html_page(request)
+
+    make_fetcher(handler, timeout=5).fetch("https://example.com/")
+    assert 0 < timeouts[0] <= 5
+
+
+def test_fetch_deadline_covers_slow_body_and_redirect_chains(monkeypatch):
+    from citerag import fetch
+
+    clock = [0.0]
+    monkeypatch.setattr(fetch.time, "monotonic", lambda: clock[0])
+
+    class Drip(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(100):
+                clock[0] += 1
+                yield b"x"
+
+    def slow_body(request):
+        return httpx.Response(200, headers={"content-type": "text/plain"}, stream=Drip())
+
+    with pytest.raises(URLFetchError, match="Timed out"):
+        make_fetcher(slow_body, timeout=10).fetch("https://example.com/a.txt")
+
+    def slow_redirect(request):
+        clock[0] += 4
+        return httpx.Response(302, headers={"location": "/next"})
+
+    clock[0] = 0.0
+    with pytest.raises(URLFetchError, match="Timed out"):
+        make_fetcher(slow_redirect, timeout=10).fetch("https://example.com/")
+    assert clock[0] == 12  # three hops, then the deadline stops the fourth
+
+
+def test_fetch_uses_html_meta_charset_without_header_charset():
+    page = '<html><head><meta charset="windows-1252"></head><p>Café</p></html>'
+
+    def handler(request):
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, content=page.encode("cp1252")
+        )
+
+    assert "Café" in make_fetcher(handler).fetch("https://example.com/").data.decode("utf-8")
