@@ -11,17 +11,46 @@ app = typer.Typer(
 )
 
 
+def _is_url(arg: str) -> bool:
+    return arg.lower().startswith(("http://", "https://"))
+
+
 @app.command()
-def ingest(paths: list[Path] = typer.Argument(..., exists=True, help="Files or folders to index.")):
-    """Index files into the local store."""
+def ingest(
+    sources: list[str] = typer.Argument(..., help="Files, folders or http(s) URLs to index."),
+):
+    """Index files, folders and web pages into the local store."""
+    # Check every local path before indexing anything, so a typo doesn't leave half a batch.
+    missing = [s for s in sources if not _is_url(s) and not Path(s).exists()]
+    if missing:
+        raise typer.BadParameter(
+            f"Path '{_one_line(missing[0])}' does not exist.", param_hint="SOURCES"
+        )
     rag = RAG.from_settings()
-    files = [f for p in paths for f in (sorted(p.rglob("*")) if p.is_dir() else [p]) if f.is_file()]
-    for f in files:
-        try:
-            info = rag.ingest(f.name, f.read_bytes())
-            typer.echo(f"indexed  {f}  ({info.chunks} chunks, id={info.doc_id})")
-        except ValueError as exc:
-            typer.secho(f"skipped  {f}: {exc}", fg=typer.colors.YELLOW)
+    for source in sources:
+        if _is_url(source):
+            _ingest_one(rag, source)
+            continue
+        path = Path(source)
+        for f in sorted(path.rglob("*")) if path.is_dir() else [path]:
+            if f.is_file():
+                _ingest_one(rag, f)
+
+
+def _ingest_one(rag: RAG, source: str | Path) -> None:
+    label = _one_line(str(source))
+    try:
+        if isinstance(source, Path):
+            info = rag.ingest(source.name, source.read_bytes())
+        else:
+            info = rag.ingest_url(source)
+    except ValueError as exc:  # includes unsupported files and URL fetch errors
+        typer.secho(f"skipped  {label}: {_one_line(str(exc))}", fg=typer.colors.YELLOW)
+        return
+    if isinstance(source, str) and info.source != source:
+        # A redirected URL is stored under its final address, which `list` will show.
+        label += f" -> {_one_line(info.source)}"
+    typer.echo(f"indexed  {label}  ({info.chunks} chunks, id={info.doc_id})")
 
 
 # C0/C1 control characters except tab and newline, so text from indexed documents can't send
