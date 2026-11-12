@@ -3,7 +3,7 @@ import io
 
 import httpx
 import pytest
-from conftest import LISBON
+from conftest import LISBON, PUBLIC_IP, FakeDNS, make_fetcher
 from pypdf import PdfWriter
 
 from citerag.fetch import (
@@ -15,25 +15,6 @@ from citerag.fetch import (
     is_public_address,
 )
 from citerag.loaders import UnsupportedFileError
-
-PUBLIC_IP = "93.184.215.14"
-
-
-class FakeDNS:
-    """Resolver with fixed answers; unknown hosts resolve to a public address."""
-
-    def __init__(self, records: dict[str, list[str]] | None = None) -> None:
-        self.records = records or {}
-        self.lookups: list[tuple[str, int]] = []
-
-    def __call__(self, host: str, port: int) -> list[str]:
-        self.lookups.append((host, port))
-        return self.records.get(host, [PUBLIC_IP])
-
-
-def make_fetcher(handler, dns=None, **kwargs) -> Fetcher:
-    kwargs.setdefault("max_bytes", 1024 * 1024)
-    return Fetcher(resolver=dns or FakeDNS(), transport=httpx.MockTransport(handler), **kwargs)
 
 
 def html_page(request: httpx.Request) -> httpx.Response:
