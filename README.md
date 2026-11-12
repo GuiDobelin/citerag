@@ -53,6 +53,9 @@ tables and text boxes are indexed; headers, footers, footnotes and comments are 
 
 ```bash
 curl -F "file=@contract.pdf" http://localhost:8000/documents
+curl -X POST http://localhost:8000/documents/url \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://docs.python.org/3/tutorial/venv.html"}'
 curl -X POST http://localhost:8000/query \
      -H "Content-Type: application/json" \
      -d '{"question": "What notice period does the contract require?"}'
@@ -65,6 +68,7 @@ pip install "citerag[local] @ git+https://github.com/GuiDobelin/citerag"
 export ANTHROPIC_API_KEY=sk-ant-...
 
 citerag ingest ./docs          # index a folder
+citerag ingest https://docs.python.org/3/tutorial/venv.html   # or a web page
 citerag ask "Summarise the refund policy"   # streams the answer; --no-stream waits for it
 citerag list                   # show indexed documents and their ids
 citerag delete DOC_ID          # remove a document
@@ -79,6 +83,7 @@ passages back verbatim, with no LLM involved.
 | Method   | Path                  | Description                                          |
 | -------- | --------------------- | ---------------------------------------------------- |
 | `POST`   | `/documents`          | Upload a file (multipart `file`). Returns `doc_id`.  |
+| `POST`   | `/documents/url`      | `{"url": "https://..."}`: fetch and index a page.    |
 | `GET`    | `/documents`          | List indexed documents.                              |
 | `DELETE` | `/documents/{doc_id}` | Remove a document and its chunks.                    |
 | `POST`   | `/query`              | `{"question": "...", "top_k": 5, "doc_ids": [...]}`  |
@@ -166,6 +171,27 @@ for (;;) {
 From the command line, `citerag ask` streams by default; pass `--no-stream` to print the answer
 only once it is complete.
 
+### Ingesting web pages
+
+`POST /documents/url` and `citerag ingest` accept `http(s)://` URLs of web pages and of PDF,
+DOCX, text or Markdown files; files, folders and URLs can be mixed in one `ingest` call. HTML
+pages are reduced to their main content (navigation, footers and scripts are dropped), and the
+final URL after redirects becomes the document's source in citations. The API answers 400 for
+a blocked or invalid URL, 413 if the response exceeds `CITERAG_MAX_UPLOAD_MB`, 415 for an
+unsupported content type, 422 if there is no text and 502 if the download fails.
+
+Fetching URLs on behalf of whoever can reach the API is a
+[server-side request forgery][ssrf] risk, so by default citerag refuses any URL whose host
+resolves to a private, loopback, link-local or otherwise non-public address (such as
+`localhost`, `10.0.0.5` or the cloud metadata endpoint `169.254.169.254`). It checks every
+redirect the same way and connects to the exact IP address it checked, so a DNS answer that
+changes between the check and the request can't get around it. Proxy environment variables
+are ignored for the same reason. To index pages on an internal network, for example a wiki
+behind your VPN, set `CITERAG_ALLOW_PRIVATE_URLS=true`, and only on deployments where every
+client is trusted.
+
+[ssrf]: https://owasp.org/www-community/attacks/Server_Side_Request_Forgery
+
 ## Configuration
 
 All settings are environment variables (or entries in `.env`).
@@ -189,7 +215,9 @@ All settings are environment variables (or entries in `.env`).
 | `CITERAG_RERANKER`         | `none`                   | `none` or `fastembed` (local cross-encoder).     |
 | `CITERAG_RERANK_MODEL`     | `Xenova/ms-marco-MiniLM-L-6-v2` | Any [fastembed reranker][rerankers]. Use `jinaai/jina-reranker-v2-base-multilingual` for non-English documents. |
 | `CITERAG_RERANK_CANDIDATES` | `20`                    | Chunks the reranker rescores (at least `top_k`). |
-| `CITERAG_MAX_UPLOAD_MB`    | `25`                     | Upload size limit.                               |
+| `CITERAG_MAX_UPLOAD_MB`    | `25`                     | Size limit for uploads and downloaded URLs.      |
+| `CITERAG_ALLOW_PRIVATE_URLS` | `false`                | Allow URLs on private or internal addresses.     |
+| `CITERAG_URL_TIMEOUT`      | `10`                     | Seconds allowed to download a URL, redirects included. |
 
 [models]: https://qdrant.github.io/fastembed/examples/Supported_Models/
 [rerankers]: https://qdrant.github.io/fastembed/examples/Supported_Models/#supported-rerank-cross-encoder-models
@@ -247,7 +275,7 @@ it instead of duplicating it.
 - [ ] API keys and per-tenant collections
 - [ ] Evaluation harness for retrieval quality
 - [x] DOCX loader
-- [ ] Ingest web pages by URL
+- [x] Ingest web pages by URL
 
 Ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
