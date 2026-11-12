@@ -288,6 +288,9 @@ Small, standalone tools built alongside citerag:
   model from the CLI or Python, including prompt-cache and long-context pricing.
 - [bm25-tiny](https://github.com/GuiDobelin/bm25-tiny): Okapi BM25 / BM25+ keyword search in
   pure Python with no dependencies, with incremental updates, JSON persistence and a CLI.
+- [html2md-clean](https://github.com/GuiDobelin/html2md-clean): turn web pages into clean
+  Markdown with only the standard library, dropping navigation and boilerplate while keeping
+  headings, lists, links, code and tables.
 
 ## Development
 
