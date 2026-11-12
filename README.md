@@ -178,7 +178,8 @@ DOCX, text or Markdown files; files, folders and URLs can be mixed in one `inges
 pages are reduced to their main content (navigation, footers and scripts are dropped), and the
 final URL after redirects becomes the document's source in citations. The API answers 400 for
 a blocked or invalid URL, 413 if the response exceeds `CITERAG_MAX_UPLOAD_MB`, 415 for an
-unsupported content type, 422 if there is no text and 502 if the download fails.
+unsupported content type, 422 if there is no text and 502 if the download fails. The CLI prints
+those errors as `skipped` and moves on, exiting with status 1 only if nothing was indexed.
 
 Fetching URLs on behalf of whoever can reach the API is a
 [server-side request forgery][ssrf] risk, so by default citerag refuses any URL whose host

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import httpx
 import typer
 
 from citerag.llm import GenerationError
@@ -12,14 +13,16 @@ app = typer.Typer(
 
 
 def _is_url(arg: str) -> bool:
-    return arg.lower().startswith(("http://", "https://"))
+    return arg.strip().lower().startswith(("http://", "https://"))
 
 
 @app.command()
 def ingest(
     sources: list[str] = typer.Argument(..., help="Files, folders or http(s) URLs to index."),
 ):
-    """Index files, folders and web pages into the local store."""
+    """Index files, folders and web pages into the local store.
+
+    Exits with status 1 if nothing could be indexed."""
     # Check every local path before indexing anything, so a typo doesn't leave half a batch.
     missing = [s for s in sources if not _is_url(s) and not Path(s).exists()]
     if missing:
@@ -27,30 +30,45 @@ def ingest(
             f"Path '{_one_line(missing[0])}' does not exist.", param_hint="SOURCES"
         )
     rag = RAG.from_settings()
+    indexed = 0
     for source in sources:
         if _is_url(source):
-            _ingest_one(rag, source)
+            indexed += _ingest_one(rag, source.strip())
             continue
         path = Path(source)
         for f in sorted(path.rglob("*")) if path.is_dir() else [path]:
             if f.is_file():
-                _ingest_one(rag, f)
+                indexed += _ingest_one(rag, f)
+    if not indexed:
+        typer.secho("Nothing was indexed.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
 
 
-def _ingest_one(rag: RAG, source: str | Path) -> None:
+def _ingest_one(rag: RAG, source: str | Path) -> bool:
+    """Index one file or URL and print the outcome. Returns whether it was indexed."""
     label = _one_line(str(source))
     try:
         if isinstance(source, Path):
             info = rag.ingest(source.name, source.read_bytes())
         else:
             info = rag.ingest_url(source)
-    except ValueError as exc:  # includes unsupported files and URL fetch errors
+    # ValueError covers unsupported files and URL fetch errors; OSError an unreadable file.
+    except (ValueError, OSError) as exc:
         typer.secho(f"skipped  {label}: {_one_line(str(exc))}", fg=typer.colors.YELLOW)
-        return
-    if isinstance(source, str) and info.source != source:
+        return False
+    if isinstance(source, str) and info.source != _normalized(source):
         # A redirected URL is stored under its final address, which `list` will show.
         label += f" -> {_one_line(info.source)}"
     typer.echo(f"indexed  {label}  ({info.chunks} chunks, id={info.doc_id})")
+    return True
+
+
+def _normalized(url: str) -> str:
+    """The URL as the fetcher reports it when there is no redirect."""
+    try:
+        return str(httpx.URL(url))
+    except httpx.InvalidURL:
+        return url
 
 
 # C0/C1 control characters except tab and newline, so text from indexed documents can't send

@@ -1,22 +1,6 @@
 import httpx
 import pytest
-from conftest import LISBON, FakeDNS, make_fetcher
-from fastapi.testclient import TestClient
-
-from citerag.api import create_app, get_rag
-
-
-def html(text: str) -> httpx.Response:
-    return httpx.Response(
-        200, headers={"content-type": "text/html; charset=utf-8"}, text=f"<p>{text}</p>"
-    )
-
-
-@pytest.fixture
-def client(rag):
-    app = create_app()
-    app.dependency_overrides[get_rag] = lambda: rag
-    return TestClient(app)
+from conftest import LISBON, FakeDNS, html, make_fetcher
 
 
 def test_ingest_url_returns_document_info_and_is_queryable(client, rag):
@@ -116,3 +100,12 @@ def test_openapi_schema_references_resolve(client):
     refs.append(responses["400"]["content"]["application/json"]["schema"]["$ref"])
     for ref in refs:
         assert ref.removeprefix("#/components/schemas/") in spec["components"]["schemas"]
+
+
+def test_ingest_url_logs_upstream_failures(client, rag, caplog):
+    rag.fetcher = make_fetcher(lambda r: httpx.Response(503))
+    with caplog.at_level("WARNING", logger="citerag.api"):
+        r = client.post("/documents/url", json={"url": "https://example.com/page"})
+    assert r.status_code == 502
+    assert "https://example.com/page" in caplog.text
+    assert "HTTP 503" in caplog.text

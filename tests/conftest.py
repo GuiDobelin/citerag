@@ -1,6 +1,8 @@
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+from citerag.api import create_app, get_rag
 from citerag.embeddings import HashEmbedder
 from citerag.fetch import Fetcher
 from citerag.llm import ExtractiveGenerator
@@ -30,6 +32,13 @@ class FakeDNS:
         return self.records.get(host, [PUBLIC_IP])
 
 
+def html(text: str) -> httpx.Response:
+    """A 200 HTML response with `text` in a paragraph."""
+    return httpx.Response(
+        200, headers={"content-type": "text/html; charset=utf-8"}, text=f"<p>{text}</p>"
+    )
+
+
 def make_fetcher(handler, dns=None, **kwargs) -> Fetcher:
     """A `Fetcher` that never touches the network: `handler` answers every request."""
     kwargs.setdefault("max_bytes", 1024 * 1024)
@@ -46,3 +55,11 @@ def rag(tmp_path) -> RAG:
         chunk_overlap=20,
         top_k=3,
     )
+
+
+@pytest.fixture
+def client(rag):
+    """A test client for the API, backed by the `rag` fixture."""
+    app = create_app()
+    app.dependency_overrides[get_rag] = lambda: rag
+    return TestClient(app)

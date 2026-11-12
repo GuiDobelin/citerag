@@ -1,15 +1,6 @@
-import pytest
 from conftest import LISBON
-from fastapi.testclient import TestClient
 
-from citerag.api import create_app, get_rag
-
-
-@pytest.fixture
-def client(rag):
-    app = create_app()
-    app.dependency_overrides[get_rag] = lambda: rag
-    return TestClient(app)
+from citerag.api import get_rag
 
 
 def test_health(client):
