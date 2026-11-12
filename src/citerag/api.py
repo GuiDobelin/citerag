@@ -162,6 +162,7 @@ def create_app() -> FastAPI:
         except ResponseTooLargeError as exc:
             raise HTTPException(413, str(exc)) from exc
         except URLFetchError as exc:
+            logger.warning("Could not fetch %r: %s", body.url, exc)
             raise HTTPException(502, str(exc)) from exc
         except UnsupportedFileError as exc:
             raise HTTPException(415, str(exc)) from exc

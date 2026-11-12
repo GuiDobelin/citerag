@@ -1,18 +1,14 @@
+from pathlib import Path
+
 import httpx
 import pytest
-from conftest import BERLIN, LISBON, FakeDNS, make_fetcher
+from conftest import BERLIN, LISBON, FakeDNS, html, make_fetcher
 from typer.testing import CliRunner
 
 from citerag.cli import app
 from citerag.pipeline import RAG
 
 runner = CliRunner()
-
-
-def html(text: str) -> httpx.Response:
-    return httpx.Response(
-        200, headers={"content-type": "text/html; charset=utf-8"}, text=f"<p>{text}</p>"
-    )
 
 
 @pytest.fixture
@@ -94,12 +90,51 @@ def test_ingest_skips_a_blocked_url_and_continues(cli_rag, tmp_path):
         httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG"),
     ],
 )
-def test_ingest_reports_url_errors_as_skipped(cli_rag, response):
+def test_ingest_reports_url_errors_as_skipped_and_fails_if_nothing_was_indexed(cli_rag, response):
     cli_rag.fetcher = make_fetcher(lambda r: response)
     result = runner.invoke(app, ["ingest", "https://example.com/x"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1
     assert result.stdout.startswith("skipped  https://example.com/x: ")
+    assert "Nothing was indexed." in result.stderr
     assert cli_rag.documents() == []
+
+
+def test_ingest_succeeds_when_some_sources_were_skipped(cli_rag, tmp_path):
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG")
+    (tmp_path / "lisbon.txt").write_text(LISBON)
+    result = runner.invoke(app, ["ingest", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert [line.split()[0] for line in result.stdout.splitlines()] == ["indexed", "skipped"]
+
+
+def test_ingest_skips_unreadable_files_and_continues(cli_rag, tmp_path, monkeypatch):
+    locked = tmp_path / "a-locked.txt"
+    locked.write_text(BERLIN)
+    (tmp_path / "b-lisbon.txt").write_text(LISBON)
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self):
+        if self == locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    result = runner.invoke(app, ["ingest", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    skipped, indexed = result.stdout.splitlines()
+    assert skipped.startswith(f"skipped  {locked}: ") and "Permission denied" in skipped
+    assert indexed.startswith("indexed  ")
+    assert [d.source for d in cli_rag.documents()] == ["b-lisbon.txt"]
+
+
+@pytest.mark.parametrize("url", ["https://Example.com", "  https://example.com/guide "])
+def test_ingest_url_without_redirect_shows_no_arrow(cli_rag, url):
+    cli_rag.fetcher = make_fetcher(lambda r: html(LISBON))
+    result = runner.invoke(app, ["ingest", url])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith(f"indexed  {url.strip()}  (")
+    assert "->" not in result.stdout
 
 
 def test_ingest_strips_control_characters_from_messages(cli_rag):
