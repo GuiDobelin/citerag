@@ -7,9 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Added
 
-- `citerag list` and `citerag delete DOC_ID` commands to show and remove indexed documents (#5).
+- DOCX loader using only the standard library: paragraphs, tables and text
+  boxes, with size and element limits to protect memory (#24, #30).
+- `.markdown`, `.rst`, `.csv` and `.json` files are ingested as plain text (#28, #31).
+- Ingest documents from a URL. `citerag.fetch.Fetcher` downloads web pages and remote files with
+  SSRF protection: the resolved IP is checked and pinned, redirects are re-checked, private,
+  loopback, link-local and other internal ranges are refused, and size and total-time limits
+  apply. Available as `RAG.ingest_url()` (#25, #35).
+- `POST /documents/url` endpoint and `citerag ingest` accepting http(s) URLs alongside files and
+  folders (#26, #37).
+- `CITERAG_ALLOW_PRIVATE_URLS` (default `false`) and `CITERAG_URL_TIMEOUT` (default `10`
+  seconds) settings for URL ingestion (#35).
+- Per-query retrieval mode: `mode` field on `POST /query` and `POST /query/stream`, and
+  `--mode` option on `citerag ask` (#16, #21).
+- `citerag list` and `citerag delete DOC_ID` commands to show and remove indexed documents (#5, #23).
+- `html2md-clean` added to the README's "Ecosystem" section (#38).
+
+### Changed
+
+- The HTML loader skips page boilerplate (navigation, headers, footers, sidebars) and keeps
+  paragraph structure (#27, #33, #36).
+- `httpx` is now a runtime dependency (used by the URL fetcher).
+
+### Fixed
+
+- The BM25 tokenizer keeps combining marks inside words and no longer drops kana voicing
+  marks (#29, #32).
+- Fetched HTML is decoded once, so pages whose headers and `<meta>` tag both name a charset no
+  longer gain a stray byte-order mark (#36).
 
 ## [0.3.0] - 2026-11-06
 
@@ -60,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files and answer questions with verifiable citations, using Claude or an offline extractive
   generator, with an in-process vector store or Qdrant.
 
-[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/GuiDobelin/citerag/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/GuiDobelin/citerag/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GuiDobelin/citerag/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/GuiDobelin/citerag/releases/tag/v0.1.0
