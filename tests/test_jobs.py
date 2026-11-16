@@ -6,7 +6,13 @@ import pytest
 from conftest import LISBON
 
 from citerag.config import Settings
-from citerag.jobs import INTERNAL_ERROR, SHUTDOWN_ERROR, JobManager, QueueFullError
+from citerag.jobs import (
+    INTERNAL_ERROR,
+    SHUTDOWN_ERROR,
+    JobManager,
+    JobManagerClosedError,
+    QueueFullError,
+)
 from citerag.loaders import UnsupportedFileError
 from citerag.models import DocumentInfo
 
@@ -14,13 +20,24 @@ DOC = DocumentInfo(doc_id="abc", source="lisbon.txt", chunks=2)
 
 
 class Clock:
+    """A fake wall clock (`__call__`) and monotonic clock (`monotonic`) that move together
+    on `advance`; `jump` moves only the wall clock, like a system clock change."""
+
     def __init__(self) -> None:
         self.now = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
+        self.elapsed = 0.0
 
     def __call__(self) -> datetime:
         return self.now
 
+    def monotonic(self) -> float:
+        return self.elapsed
+
     def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+        self.elapsed += seconds
+
+    def jump(self, seconds: float) -> None:
         self.now += timedelta(seconds=seconds)
 
 
@@ -54,7 +71,10 @@ class HeldExecutor(Executor):
 
 
 def manager(executor=None, clock=None, **kwargs) -> JobManager:
-    return JobManager(executor=executor or InlineExecutor(), clock=clock or Clock(), **kwargs)
+    clock = clock or Clock()
+    return JobManager(
+        executor=executor or InlineExecutor(), clock=clock, monotonic=clock.monotonic, **kwargs
+    )
 
 
 def test_successful_job_records_result_and_timestamps():
@@ -213,7 +233,7 @@ def test_shutdown_fails_queued_jobs_and_refuses_new_ones():
     stopped = jobs.get(job.id)
     assert stopped.status == "failed"
     assert stopped.error == SHUTDOWN_ERROR
-    with pytest.raises(RuntimeError):
+    with pytest.raises(JobManagerClosedError):
         jobs.submit("file", "b.txt", lambda: DOC)
 
 
@@ -265,7 +285,43 @@ def test_from_settings(monkeypatch):
     jobs = JobManager.from_settings(Settings(_env_file=None))
     try:
         assert jobs.max_pending == 3
-        assert jobs.ttl == timedelta(seconds=120)
+        assert jobs.ttl == 120
         assert jobs.max_jobs == 1000
     finally:
         jobs.shutdown()
+
+
+def test_wall_clock_changes_do_not_affect_expiry():
+    clock = Clock()
+    jobs = manager(clock=clock, ttl=60)
+    job = jobs.submit("file", "lisbon.txt", lambda: DOC)
+    clock.jump(7200)
+    assert jobs.get(job.id) is not None
+    clock.advance(60)
+    assert jobs.get(job.id) is None
+
+
+def test_base_exceptions_fail_the_job_and_propagate():
+    def stop():
+        raise SystemExit(1)
+
+    executor = HeldExecutor()
+    jobs = manager(executor)
+    job = jobs.submit("file", "a.txt", stop)
+    with pytest.raises(SystemExit):
+        executor.run_all()
+    failed = jobs.get(job.id)
+    assert failed.status == "failed"
+    assert failed.error == INTERNAL_ERROR
+
+
+def test_shutdown_leaves_an_injected_executor_running():
+    class Tracking(InlineExecutor):
+        closed = False
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            self.closed = True
+
+    executor = Tracking()
+    manager(executor).shutdown()
+    assert not executor.closed
