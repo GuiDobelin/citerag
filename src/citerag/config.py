@@ -45,3 +45,9 @@ class Settings(BaseSettings):
     # URL ingestion. Private, loopback and link-local addresses are refused unless allowed.
     allow_private_urls: bool = False
     url_timeout: float = Field(10.0, gt=0)
+
+    # Background ingestion jobs, kept in process memory
+    job_workers: int = Field(2, ge=1)
+    job_ttl: float = Field(3600.0, gt=0)
+    max_jobs: int = Field(1000, ge=1)
+    max_pending_jobs: int = Field(20, ge=1)
