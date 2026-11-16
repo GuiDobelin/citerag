@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from citerag import __version__
 from citerag.config import Settings
 from citerag.fetch import BlockedURLError, ResponseTooLargeError, URLFetchError
+from citerag.jobs import Job, JobManager, JobStatus
 from citerag.llm import GenerationError
 from citerag.loaders import UnsupportedFileError
 from citerag.models import Answer, DocumentInfo, Done, RetrievalMode, StreamEvent
@@ -115,6 +116,11 @@ def get_rag() -> RAG:
     return RAG.from_settings(get_settings())
 
 
+@lru_cache
+def get_job_manager() -> JobManager:
+    return JobManager.from_settings(get_settings())
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="citerag",
@@ -125,6 +131,13 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "version": __version__}
+
+    @app.get("/jobs", response_model=list[Job])
+    def list_jobs(
+        status: JobStatus | None = None,
+        job_manager: JobManager = Depends(get_job_manager),
+    ) -> list[Job]:
+        return job_manager.list(status)
 
     @app.post("/documents", response_model=DocumentInfo, status_code=201)
     def upload(

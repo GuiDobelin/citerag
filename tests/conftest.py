@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from citerag.api import create_app, get_rag
 from citerag.embeddings import HashEmbedder
 from citerag.fetch import Fetcher
+from citerag.jobs import JobManager
 from citerag.llm import ExtractiveGenerator
 from citerag.pipeline import RAG
 from citerag.store import MemoryStore
@@ -55,6 +56,13 @@ def rag(tmp_path) -> RAG:
         chunk_overlap=20,
         top_k=3,
     )
+
+
+@pytest.fixture
+def job_manager():
+    manager = JobManager()
+    yield manager
+    manager.shutdown()
 
 
 @pytest.fixture
