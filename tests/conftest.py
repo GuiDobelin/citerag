@@ -1,3 +1,4 @@
+import time
 from concurrent.futures import Executor, Future
 
 import httpx
@@ -75,6 +76,17 @@ class HeldExecutor(Executor):
     def shutdown(self, wait=True, *, cancel_futures=False):
         if cancel_futures:
             self.pending.clear()
+
+
+def poll(client, job_id: str, timeout: float = 5.0) -> dict:
+    """Poll `GET /jobs/{job_id}` until the job has finished and return it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/jobs/{job_id}").json()
+        if job["status"] in ("succeeded", "failed"):
+            return job
+        time.sleep(0.01)
+    pytest.fail(f"job {job_id} did not finish in {timeout}s")
 
 
 @pytest.fixture
