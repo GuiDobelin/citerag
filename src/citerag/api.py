@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -134,19 +135,36 @@ def get_rag() -> RAG:
     return RAG.from_settings(get_settings())
 
 
-@lru_cache
+_job_manager: JobManager | None = None
+# `lru_cache` may build two instances when requests race on the first call, and a job
+# submitted to the one that isn't kept could never be found again, so use a lock instead.
+_job_manager_lock = threading.Lock()
+
+
 def get_job_manager() -> JobManager:
-    return JobManager.from_settings(get_settings())
+    """The process-wide job manager, created on first use."""
+    global _job_manager
+    with _job_manager_lock:
+        if _job_manager is None:
+            _job_manager = JobManager.from_settings(get_settings())
+        return _job_manager
+
+
+def close_job_manager() -> None:
+    """Shut down the job manager if one was created; the next use creates a new one."""
+    global _job_manager
+    with _job_manager_lock:
+        manager, _job_manager = _job_manager, None
+    if manager is not None:
+        # Queued jobs are marked failed and the server stops at once; the interpreter still
+        # lets jobs that are already running finish before the process exits.
+        manager.shutdown(wait=False)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
-    # Only shut down a manager that was actually created; queued jobs are marked failed and
-    # running ones are left to finish in their threads, so shutdown isn't held up by them.
-    if get_job_manager.cache_info().currsize:
-        get_job_manager().shutdown(wait=False)
-        get_job_manager.cache_clear()
+    close_job_manager()
 
 
 def submit_job(
@@ -159,10 +177,12 @@ def submit_job(
         raise HTTPException(503, str(exc), headers={"Retry-After": "5"}) from exc
     except JobManagerClosedError as exc:
         raise HTTPException(503, "The server is shutting down.") from exc
+    # A path rather than an absolute URL: behind a proxy, the scheme and host this process
+    # sees may not be the ones the client used.
+    root = request.scope.get("root_path", "").rstrip("/")
+    location = root + request.app.url_path_for("get_job", job_id=job.id)
     return JSONResponse(
-        job.model_dump(mode="json"),
-        status_code=202,
-        headers={"Location": str(request.url_for("get_job", job_id=job.id))},
+        job.model_dump(mode="json"), status_code=202, headers={"Location": location}
     )
 
 

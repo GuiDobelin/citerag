@@ -1,10 +1,11 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from conftest import LISBON, HeldExecutor
 from fastapi.testclient import TestClient
 
-from citerag.api import create_app, get_job_manager, get_rag, get_settings
+from citerag.api import close_job_manager, create_app, get_job_manager, get_rag, get_settings
 from citerag.config import Settings
 from citerag.jobs import JobManager, JobManagerClosedError
 from citerag.models import DocumentInfo
@@ -94,7 +95,7 @@ def test_async_upload_returns_202_with_location(held_client, executor):
     assert job["status"] == "queued"
     assert job["kind"] == "file"
     assert job["source"] == "lisbon.txt"
-    assert r.headers["location"] == f"http://testserver/jobs/{job['id']}"
+    assert r.headers["location"] == f"/jobs/{job['id']}"
     assert held_client.get(r.headers["location"]).json()["status"] == "queued"
 
     executor.run_all()
@@ -186,23 +187,58 @@ def test_get_unknown_job_returns_404(client):
     assert r.json()["detail"] == "Job not found or expired."
 
 
-def test_lifespan_shuts_down_the_cached_job_manager(monkeypatch):
+@pytest.fixture
+def fresh_manager(monkeypatch):
+    """Start with no process-wide job manager and close whatever a test creates."""
     monkeypatch.setattr("citerag.api.get_settings", lambda: Settings(job_workers=1))
-    get_job_manager.cache_clear()
+    close_job_manager()
+    yield
+    close_job_manager()
+
+
+def test_lifespan_shuts_down_the_job_manager(fresh_manager):
     with TestClient(create_app()):
         jobs = get_job_manager()
+        assert get_job_manager() is jobs
 
-    assert get_job_manager.cache_info().currsize == 0
     with pytest.raises(JobManagerClosedError):
         jobs.submit("file", "a.txt", lambda: DOC)
+    assert get_job_manager() is not jobs
 
 
-def test_lifespan_does_not_create_a_job_manager(monkeypatch):
-    get_job_manager.cache_clear()
+def test_lifespan_does_not_create_a_job_manager(fresh_manager, monkeypatch):
+    def fail(settings):
+        pytest.fail("no job manager should be created")
+
+    monkeypatch.setattr(JobManager, "from_settings", fail)
     with TestClient(create_app()) as client:
         assert client.get("/health").status_code == 200
 
-    assert get_job_manager.cache_info().currsize == 0
+
+def test_concurrent_first_calls_share_one_job_manager(fresh_manager, monkeypatch):
+    real = JobManager.from_settings
+    created = []
+
+    def slow(settings):
+        time.sleep(0.02)  # widen the window in which a racing caller could build another one
+        created.append(real(settings))
+        return created[-1]
+
+    monkeypatch.setattr(JobManager, "from_settings", slow)
+    with ThreadPoolExecutor(8) as pool:
+        managers = list(pool.map(lambda _: get_job_manager(), range(8)))
+
+    assert len(created) == 1
+    assert all(m is created[0] for m in managers)
+
+
+def test_location_respects_root_path(rag, held):
+    app = create_app()
+    app.dependency_overrides[get_rag] = lambda: rag
+    app.dependency_overrides[get_job_manager] = lambda: held
+    r = upload(TestClient(app, root_path="/citerag"))
+
+    assert r.headers["location"] == f"/citerag/jobs/{r.json()['id']}"
 
 
 def test_openapi_documents_async_responses(client):
