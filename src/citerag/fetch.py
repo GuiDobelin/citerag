@@ -112,6 +112,15 @@ def filename_for(url: httpx.URL, content_type: str) -> str:
     return f"{stem}{suffix}"
 
 
+def _check_syntax(url: httpx.URL) -> None:
+    if url.scheme not in ("http", "https"):
+        raise BlockedURLError(f"Only http and https URLs are allowed, not '{url.scheme}'.")
+    if not url.host:
+        raise BlockedURLError(f"URL has no host: {url}")
+    if url.userinfo:
+        raise BlockedURLError("URLs with a username or password are not allowed.")
+
+
 def _ascii_host(url: httpx.URL) -> str:
     """The host in ASCII (IDNA) form, without the brackets around IPv6 addresses."""
     return url.raw_host.decode("ascii").strip("[]")
@@ -178,13 +187,21 @@ class Fetcher:
         self.resolver = resolver or system_resolver
         self.transport = transport
 
-    def fetch(self, url: str) -> FetchedDocument:
+    def validate(self, url: str) -> httpx.URL:
+        """Parse `url` and run the checks that need no network: type, syntax, scheme, host
+        and credentials. Raises `BlockedURLError`. Whether the host resolves to a public
+        address is only known when fetching."""
         if not isinstance(url, str):
             raise BlockedURLError(f"URL must be a string, not {type(url).__name__}.")
         try:
-            current = httpx.URL(url.strip())
+            parsed = httpx.URL(url.strip())
         except (httpx.InvalidURL, TypeError) as exc:
             raise BlockedURLError(f"Invalid URL: {exc}") from exc
+        _check_syntax(parsed)
+        return parsed
+
+    def fetch(self, url: str) -> FetchedDocument:
+        current = self.validate(url)
         deadline = time.monotonic() + self.timeout
         with httpx.Client(
             transport=self.transport,
@@ -220,13 +237,8 @@ class Fetcher:
             raise URLFetchError(f"Invalid redirect location: {location!r}") from exc
 
     def _check(self, url: httpx.URL) -> str:
-        """Validate `url` and return the IP address to connect to."""
-        if url.scheme not in ("http", "https"):
-            raise BlockedURLError(f"Only http and https URLs are allowed, not '{url.scheme}'.")
-        if not url.host:
-            raise BlockedURLError(f"URL has no host: {url}")
-        if url.userinfo:
-            raise BlockedURLError("URLs with a username or password are not allowed.")
+        """Validate `url` (also each redirect target) and return the IP address to connect to."""
+        _check_syntax(url)
         port = url.port or (443 if url.scheme == "https" else 80)
         addresses = self.resolver(_ascii_host(url), port)
         if not addresses:
