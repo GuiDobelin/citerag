@@ -1,17 +1,18 @@
 import json
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from itertools import chain
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from citerag import __version__
 from citerag.config import Settings
 from citerag.fetch import BlockedURLError, ResponseTooLargeError, URLFetchError
-from citerag.jobs import Job, JobManager, JobStatus
+from citerag.jobs import Job, JobKind, JobManager, JobManagerClosedError, JobStatus, QueueFullError
 from citerag.llm import GenerationError
 from citerag.loaders import UnsupportedFileError
 from citerag.models import Answer, DocumentInfo, Done, RetrievalMode, StreamEvent
@@ -94,6 +95,23 @@ URL_ERRORS = {
 }
 
 
+JOB_RESPONSES = {
+    202: {
+        "model": Job,
+        "description": "Accepted (`wait=false`): the document is ingested in the background. "
+        "Poll the job at the `Location` header until its status is `succeeded` or `failed`.",
+        "headers": {"Location": {"description": "URL of the job.", "schema": {"type": "string"}}},
+    },
+    503: _error("Too many ingestion jobs are pending, or the server is shutting down."),
+}
+
+WAIT_DESCRIPTION = (
+    "Ingest before responding (201 with the document). With `false`, respond at once with "
+    "202 and a job to poll at `GET /jobs/{id}`; errors found while ingesting are reported in "
+    "the job instead of as an HTTP status."
+)
+
+
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=50)
@@ -121,11 +139,39 @@ def get_job_manager() -> JobManager:
     return JobManager.from_settings(get_settings())
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    # Only shut down a manager that was actually created; queued jobs are marked failed and
+    # running ones are left to finish in their threads, so shutdown isn't held up by them.
+    if get_job_manager.cache_info().currsize:
+        get_job_manager().shutdown(wait=False)
+        get_job_manager.cache_clear()
+
+
+def submit_job(
+    request: Request, jobs: JobManager, kind: JobKind, source: str, fn: Callable[[], DocumentInfo]
+) -> JSONResponse:
+    """Queue an ingestion job and return the 202 response that points at it."""
+    try:
+        job = jobs.submit(kind, source, fn)
+    except QueueFullError as exc:
+        raise HTTPException(503, str(exc), headers={"Retry-After": "5"}) from exc
+    except JobManagerClosedError as exc:
+        raise HTTPException(503, "The server is shutting down.") from exc
+    return JSONResponse(
+        job.model_dump(mode="json"),
+        status_code=202,
+        headers={"Location": str(request.url_for("get_job", job_id=job.id))},
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="citerag",
         version=__version__,
         description="Ask questions about your documents and get answers with verifiable citations.",
+        lifespan=lifespan,
     )
 
     @app.get("/health")
@@ -139,18 +185,35 @@ def create_app() -> FastAPI:
     ) -> list[Job]:
         return job_manager.list(status)
 
-    @app.post("/documents", response_model=DocumentInfo, status_code=201)
+    @app.get("/jobs/{job_id}", response_model=Job, responses={404: _error("Unknown job.")})
+    def get_job(job_id: str, job_manager: JobManager = Depends(get_job_manager)) -> Job:
+        """The status of an ingestion job. Finished jobs are kept for `CITERAG_JOB_TTL`
+        seconds and only in the memory of the server process that accepted them."""
+        job = job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found or expired.")
+        return job
+
+    @app.post("/documents", response_model=DocumentInfo, status_code=201, responses=JOB_RESPONSES)
     def upload(
+        request: Request,
         file: UploadFile = File(...),
+        wait: bool = Query(True, description=WAIT_DESCRIPTION),
         rag: RAG = Depends(get_rag),
         settings: Settings = Depends(get_settings),
-    ) -> DocumentInfo:
+        job_manager: JobManager = Depends(get_job_manager),
+    ) -> DocumentInfo | JSONResponse:
         limit = settings.max_upload_mb * 1024 * 1024
         data = file.file.read(limit + 1)
         if len(data) > limit:
             raise HTTPException(413, f"File exceeds {settings.max_upload_mb} MB.")
+        filename = file.filename or "upload.txt"
+        if not wait:
+            return submit_job(
+                request, job_manager, "file", filename, lambda: rag.ingest(filename, data)
+            )
         try:
-            return rag.ingest(file.filename or "upload.txt", data)
+            return rag.ingest(filename, data)
         except UnsupportedFileError as exc:
             raise HTTPException(415, str(exc)) from exc
         except ValueError as exc:
