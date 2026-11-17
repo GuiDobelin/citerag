@@ -57,12 +57,24 @@ def sse_events(events: Iterable[StreamEvent]) -> Iterator[str]:
         yield sse_frame("error", {"detail": "Internal server error."})
 
 
+WAIT_DESCRIPTION = (
+    "Ingest before responding (201 with the document). With `false`, respond at once with "
+    "202 and a job to poll at `GET /jobs/{id}`; errors found while ingesting are reported in "
+    "the job instead of as an HTTP status."
+)
+
+
 class URLRequest(BaseModel):
     url: str = Field(
         min_length=1,
         max_length=2048,
         description="An http(s) URL of a web page or a PDF, DOCX, text or Markdown file.",
         examples=["https://example.com/guide"],
+    )
+    wait: bool = Field(
+        default=True,
+        description=WAIT_DESCRIPTION
+        + " Checks that need no network (scheme, syntax) still fail with 400 right away.",
     )
 
 
@@ -105,12 +117,6 @@ JOB_RESPONSES = {
     },
     503: _error("Too many ingestion jobs are pending, or the server is shutting down."),
 }
-
-WAIT_DESCRIPTION = (
-    "Ingest before responding (201 with the document). With `false`, respond at once with "
-    "202 and a job to poll at `GET /jobs/{id}`; errors found while ingesting are reported in "
-    "the job instead of as an HTTP status."
-)
 
 
 class QueryRequest(BaseModel):
@@ -186,6 +192,17 @@ def submit_job(
     )
 
 
+def ingest_logged(rag: RAG, url: str) -> DocumentInfo:
+    """`rag.ingest_url` for a background job, logging upstream failures like the 502 path."""
+    try:
+        return rag.ingest_url(url)
+    except (BlockedURLError, ResponseTooLargeError):
+        raise
+    except URLFetchError as exc:
+        logger.warning("Could not fetch %r: %s", url, exc)
+        raise
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="citerag",
@@ -243,13 +260,28 @@ def create_app() -> FastAPI:
         "/documents/url",
         response_model=DocumentInfo,
         status_code=201,
-        responses=URL_ERRORS,
+        responses={**URL_ERRORS, **JOB_RESPONSES},
         summary="Ingest a URL",
     )
-    def ingest_url(body: URLRequest, rag: RAG = Depends(get_rag)) -> DocumentInfo:
+    def ingest_url(
+        request: Request,
+        body: URLRequest,
+        rag: RAG = Depends(get_rag),
+        job_manager: JobManager = Depends(get_job_manager),
+    ) -> DocumentInfo | JSONResponse:
         """Download a web page or document and index it. The final URL, after redirects,
         becomes the document's `source`. Private and internal addresses are refused unless
-        `CITERAG_ALLOW_PRIVATE_URLS=true`."""
+        `CITERAG_ALLOW_PRIVATE_URLS=true`.
+
+        With `"wait": false`, fetch errors (blocked address, too large, error status,
+        timeout) are reported in the job with the same message as the 4xx/5xx detail."""
+        if not body.wait:
+            try:
+                rag.fetcher.validate(body.url)
+            except BlockedURLError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            url = body.url.strip()
+            return submit_job(request, job_manager, "url", url, lambda: ingest_logged(rag, url))
         try:
             return rag.ingest_url(body.url)
         # The URL errors subclass ValueError, so they must be caught before the generic 422.
