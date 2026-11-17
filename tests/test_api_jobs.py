@@ -2,7 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from conftest import LISBON, HeldExecutor
+from conftest import LISBON, HeldExecutor, poll
 from fastapi.testclient import TestClient
 
 from citerag.api import close_job_manager, create_app, get_job_manager, get_rag, get_settings
@@ -41,16 +41,6 @@ def upload(client, name="lisbon.txt", data=LISBON_BYTES, wait="false"):
     return client.post(
         "/documents", params={"wait": wait}, files={"file": (name, data, "text/plain")}
     )
-
-
-def poll(client, job_id: str, timeout: float = 5.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        job = client.get(f"/jobs/{job_id}").json()
-        if job["status"] in ("succeeded", "failed"):
-            return job
-        time.sleep(0.01)
-    pytest.fail(f"job {job_id} did not finish in {timeout}s")
 
 
 def test_list_jobs_returns_empty_list(client):

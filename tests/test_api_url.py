@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from conftest import LISBON, FakeDNS, html, make_fetcher
+from conftest import LISBON, FakeDNS, html, make_fetcher, poll
 
 
 def test_ingest_url_returns_document_info_and_is_queryable(client, rag):
@@ -86,7 +86,7 @@ def test_ingest_url_validates_the_body(client, rag, body):
 
 def test_openapi_documents_the_endpoint_and_its_errors(client):
     operation = client.get("/openapi.json").json()["paths"]["/documents/url"]["post"]
-    assert set(operation["responses"]) == {"201", "400", "413", "415", "422", "502"}
+    assert set(operation["responses"]) == {"201", "202", "400", "413", "415", "422", "502", "503"}
     assert operation["responses"]["201"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/DocumentInfo"
     }
@@ -107,5 +107,102 @@ def test_ingest_url_logs_upstream_failures(client, rag, caplog):
     with caplog.at_level("WARNING", logger="citerag.api"):
         r = client.post("/documents/url", json={"url": "https://example.com/page"})
     assert r.status_code == 502
+    assert "https://example.com/page" in caplog.text
+    assert "HTTP 503" in caplog.text
+
+
+def test_async_ingest_url_returns_202_and_the_job_succeeds(client, rag):
+    def handler(request):
+        if request.url.path == "/lisbon":
+            return httpx.Response(302, headers={"location": "/cities/lisbon"})
+        return html(LISBON)
+
+    rag.fetcher = make_fetcher(handler)
+    r = client.post("/documents/url", json={"url": " https://example.com/lisbon ", "wait": False})
+
+    assert r.status_code == 202
+    job = r.json()
+    assert job["kind"] == "url"
+    assert job["source"] == "https://example.com/lisbon"
+    assert r.headers["location"] == f"/jobs/{job['id']}"
+    done = poll(client, job["id"])
+    assert done["status"] == "succeeded"
+    assert done["result"]["source"] == "https://example.com/cities/lisbon"
+    assert [d.doc_id for d in rag.documents()] == [done["result"]["doc_id"]]
+
+
+@pytest.mark.parametrize(
+    "url", ["ftp://example.com/file.txt", "not a url", "https://user:pass@example.com/"]
+)
+def test_async_ingest_url_rejects_invalid_urls_synchronously(client, rag, job_manager, url):
+    rag.fetcher = make_fetcher(lambda r: pytest.fail("no request expected"))
+    sync = client.post("/documents/url", json={"url": url})
+    r = client.post("/documents/url", json={"url": url, "wait": False})
+
+    assert r.status_code == 400
+    assert r.json()["detail"] == sync.json()["detail"]
+    assert job_manager.list() == []
+
+
+def test_async_ingest_url_validates_the_body(client):
+    r = client.post("/documents/url", json={"url": "https://example.com/", "wait": "later"})
+    assert r.status_code == 422
+
+
+def _network_error(request):
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+def _timeout(request):
+    raise httpx.ReadTimeout("timed out", request=request)
+
+
+@pytest.mark.parametrize(
+    ("handler", "dns", "sync_status"),
+    [
+        (lambda r: pytest.fail("no request expected"), {"internal.example": ["10.0.0.5"]}, 400),
+        (
+            lambda r: httpx.Response(
+                200, headers={"content-type": "text/plain", "content-length": "99999"}, text="x"
+            ),
+            None,
+            413,
+        ),
+        (
+            lambda r: httpx.Response(200, headers={"content-type": "image/png"}, content=b"x"),
+            None,
+            415,
+        ),
+        (lambda r: httpx.Response(200, headers={"content-type": "text/html"}, text=" "), None, 422),
+        (lambda r: httpx.Response(404, text="not found"), None, 502),
+        (lambda r: httpx.Response(503), None, 502),
+        (_network_error, None, 502),
+        (_timeout, None, 502),
+    ],
+    ids=["blocked", "too-large", "unsupported", "no-text", "404", "503", "network", "timeout"],
+)
+def test_async_ingest_url_failures_match_the_sync_error(client, rag, handler, dns, sync_status):
+    """Every error the synchronous endpoint maps to a status ends as a failed job with the
+    same message."""
+    rag.fetcher = make_fetcher(handler, FakeDNS(dns), max_bytes=1000)
+    url = "https://internal.example/page"
+    sync = client.post("/documents/url", json={"url": url})
+    assert sync.status_code == sync_status
+
+    r = client.post("/documents/url", json={"url": url, "wait": False})
+
+    assert r.status_code == 202
+    job = poll(client, r.json()["id"])
+    assert job["status"] == "failed"
+    assert job["error"] == sync.json()["detail"]
+    assert job["result"] is None
+    assert rag.documents() == []
+
+
+def test_async_ingest_url_logs_upstream_failures(client, rag, caplog):
+    rag.fetcher = make_fetcher(lambda r: httpx.Response(503))
+    with caplog.at_level("WARNING", logger="citerag.api"):
+        r = client.post("/documents/url", json={"url": "https://example.com/page", "wait": False})
+        poll(client, r.json()["id"])
     assert "https://example.com/page" in caplog.text
     assert "HTTP 503" in caplog.text
