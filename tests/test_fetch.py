@@ -450,3 +450,27 @@ def test_ingest_url_reencodes_csv_charset(rag):
     info = rag.ingest_url("https://example.com/cities")
     assert info.source == "https://example.com/cities"
     assert "São Paulo" in rag.store.chunks()[0].text
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        (42, "must be a string"),
+        ("ftp://example.com/a.txt", "Only http and https"),
+        ("https://user:pw@example.com/", "username or password"),
+        ("http://", "no host"),
+    ],
+)
+def test_validate_rejects_without_network(url, message):
+    dns = FakeDNS()
+    fetcher = make_fetcher(lambda r: pytest.fail("no request expected"), dns)
+    with pytest.raises(BlockedURLError, match=message):
+        fetcher.validate(url)
+    assert dns.lookups == []
+
+
+def test_validate_does_not_resolve_the_host():
+    dns = FakeDNS({"internal.example": ["10.0.0.5"]})
+    fetcher = make_fetcher(lambda r: pytest.fail("no request expected"), dns)
+    assert str(fetcher.validate("  https://internal.example/a ")) == "https://internal.example/a"
+    assert dns.lookups == []
