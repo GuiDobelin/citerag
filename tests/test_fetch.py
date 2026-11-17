@@ -474,3 +474,14 @@ def test_validate_does_not_resolve_the_host():
     fetcher = make_fetcher(lambda r: pytest.fail("no request expected"), dns)
     assert str(fetcher.validate("  https://internal.example/a ")) == "https://internal.example/a"
     assert dns.lookups == []
+
+
+def test_validate_rejects_private_ip_literals_unless_allowed():
+    dns = FakeDNS()
+    blocked = make_fetcher(lambda r: pytest.fail("no request expected"), dns)
+    with pytest.raises(BlockedURLError, match=r"non-public address \(10\.0\.0\.5\)"):
+        blocked.validate("http://10.0.0.5/")
+    allowed = make_fetcher(lambda r: pytest.fail("no request expected"), dns, allow_private=True)
+    assert allowed.validate("http://10.0.0.5/").host == "10.0.0.5"
+    assert str(blocked.validate(f"http://{PUBLIC_IP}/")) == f"http://{PUBLIC_IP}/"
+    assert dns.lookups == []

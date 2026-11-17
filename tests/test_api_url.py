@@ -206,3 +206,31 @@ def test_async_ingest_url_logs_upstream_failures(client, rag, caplog):
         poll(client, r.json()["id"])
     assert "https://example.com/page" in caplog.text
     assert "HTTP 503" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("params", "body_wait", "status"),
+    [({"wait": "false"}, True, 202), ({"wait": "true"}, False, 201), ({}, False, 202)],
+)
+def test_wait_query_parameter_overrides_the_body(client, rag, params, body_wait, status):
+    rag.fetcher = make_fetcher(lambda r: html(LISBON))
+    r = client.post(
+        "/documents/url",
+        params=params,
+        json={"url": "https://example.com/page", "wait": body_wait},
+    )
+    assert r.status_code == status
+    if status == 202:
+        assert poll(client, r.json()["id"])["status"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:6333/", "http://169.254.169.254/latest/", "http://[::1]/"]
+)
+def test_async_ingest_url_rejects_private_ip_literals_synchronously(client, rag, job_manager, url):
+    rag.fetcher = make_fetcher(lambda r: pytest.fail("no request expected"))
+    r = client.post("/documents/url", json={"url": url, "wait": False})
+
+    assert r.status_code == 400
+    assert "non-public address" in r.json()["detail"]
+    assert job_manager.list() == []

@@ -121,6 +121,13 @@ def _check_syntax(url: httpx.URL) -> None:
         raise BlockedURLError("URLs with a username or password are not allowed.")
 
 
+def _non_public(url: httpx.URL, ip: str) -> BlockedURLError:
+    return BlockedURLError(
+        f"'{url.host}' resolves to a non-public address ({ip}). "
+        "Set CITERAG_ALLOW_PRIVATE_URLS=true to allow internal hosts."
+    )
+
+
 def _ascii_host(url: httpx.URL) -> str:
     """The host in ASCII (IDNA) form, without the brackets around IPv6 addresses."""
     return url.raw_host.decode("ascii").strip("[]")
@@ -198,6 +205,16 @@ class Fetcher:
         except (httpx.InvalidURL, TypeError) as exc:
             raise BlockedURLError(f"Invalid URL: {exc}") from exc
         _check_syntax(parsed)
+        if not self.allow_private:
+            # An IP literal needs no DNS lookup to be judged.
+            host = _ascii_host(parsed)
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                if not is_public_address(host):
+                    raise _non_public(parsed, host)
         return parsed
 
     def fetch(self, url: str) -> FetchedDocument:
@@ -248,10 +265,7 @@ class Fetcher:
             # private record could still reach the private one on a later connection.
             blocked = [a for a in addresses if not is_public_address(a)]
             if blocked:
-                raise BlockedURLError(
-                    f"'{url.host}' resolves to a non-public address ({blocked[0]}). "
-                    "Set CITERAG_ALLOW_PRIVATE_URLS=true to allow internal hosts."
-                )
+                raise _non_public(url, blocked[0])
         return addresses[0]
 
     def _open(self, client: httpx.Client, url: httpx.URL, deadline: float) -> httpx.Response:
