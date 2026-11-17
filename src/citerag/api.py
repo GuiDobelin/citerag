@@ -266,6 +266,9 @@ def create_app() -> FastAPI:
     def ingest_url(
         request: Request,
         body: URLRequest,
+        wait: bool | None = Query(
+            None, description="Same as `wait` in the body, which it overrides when given."
+        ),
         rag: RAG = Depends(get_rag),
         job_manager: JobManager = Depends(get_job_manager),
     ) -> DocumentInfo | JSONResponse:
@@ -275,7 +278,9 @@ def create_app() -> FastAPI:
 
         With `"wait": false`, fetch errors (blocked address, too large, error status,
         timeout) are reported in the job with the same message as the 4xx/5xx detail."""
-        if not body.wait:
+        # Uploads take `wait` as a query parameter, so accept it here too rather than silently
+        # running synchronously for a client that sends it the same way.
+        if not (body.wait if wait is None else wait):
             try:
                 rag.fetcher.validate(body.url)
             except BlockedURLError as exc:
