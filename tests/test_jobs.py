@@ -1,9 +1,9 @@
 import threading
-from concurrent.futures import Executor, Future
+from concurrent.futures import Executor
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import LISBON
+from conftest import LISBON, HeldExecutor, InlineExecutor
 
 from citerag.config import Settings
 from citerag.jobs import (
@@ -39,35 +39,6 @@ class Clock:
 
     def jump(self, seconds: float) -> None:
         self.now += timedelta(seconds=seconds)
-
-
-class InlineExecutor(Executor):
-    """Runs each job as soon as it is submitted, so tests need no threads."""
-
-    def submit(self, fn, /, *args, **kwargs):
-        future: Future = Future()
-        future.set_result(fn(*args, **kwargs))
-        return future
-
-
-class HeldExecutor(Executor):
-    """Keeps submitted jobs until `run_all`, to observe the `queued` state."""
-
-    def __init__(self) -> None:
-        self.pending: list = []
-
-    def submit(self, fn, /, *args, **kwargs):
-        self.pending.append((fn, args))
-        return Future()
-
-    def run_all(self) -> None:
-        while self.pending:
-            fn, args = self.pending.pop(0)
-            fn(*args)
-
-    def shutdown(self, wait=True, *, cancel_futures=False):
-        if cancel_futures:
-            self.pending.clear()
 
 
 def manager(executor=None, clock=None, **kwargs) -> JobManager:

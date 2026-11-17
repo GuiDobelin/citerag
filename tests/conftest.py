@@ -1,8 +1,10 @@
+from concurrent.futures import Executor, Future
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from citerag.api import create_app, get_rag
+from citerag.api import create_app, get_job_manager, get_rag
 from citerag.embeddings import HashEmbedder
 from citerag.fetch import Fetcher
 from citerag.jobs import JobManager
@@ -46,6 +48,35 @@ def make_fetcher(handler, dns=None, **kwargs) -> Fetcher:
     return Fetcher(resolver=dns or FakeDNS(), transport=httpx.MockTransport(handler), **kwargs)
 
 
+class InlineExecutor(Executor):
+    """Runs each job as soon as it is submitted, so tests need no threads."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        future: Future = Future()
+        future.set_result(fn(*args, **kwargs))
+        return future
+
+
+class HeldExecutor(Executor):
+    """Keeps submitted jobs until `run_all`, to observe the `queued` state."""
+
+    def __init__(self) -> None:
+        self.pending: list = []
+
+    def submit(self, fn, /, *args, **kwargs):
+        self.pending.append((fn, args))
+        return Future()
+
+    def run_all(self) -> None:
+        while self.pending:
+            fn, args = self.pending.pop(0)
+            fn(*args)
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        if cancel_futures:
+            self.pending.clear()
+
+
 @pytest.fixture
 def rag(tmp_path) -> RAG:
     return RAG(
@@ -60,14 +91,16 @@ def rag(tmp_path) -> RAG:
 
 @pytest.fixture
 def job_manager():
+    """A real `JobManager` with worker threads."""
     manager = JobManager()
     yield manager
     manager.shutdown()
 
 
 @pytest.fixture
-def client(rag):
-    """A test client for the API, backed by the `rag` fixture."""
+def client(rag, job_manager):
+    """A test client for the API, backed by the `rag` and `job_manager` fixtures."""
     app = create_app()
     app.dependency_overrides[get_rag] = lambda: rag
+    app.dependency_overrides[get_job_manager] = lambda: job_manager
     return TestClient(app)
