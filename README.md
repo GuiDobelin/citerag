@@ -291,6 +291,8 @@ Small, standalone tools built alongside citerag:
 - [html2md-clean](https://github.com/GuiDobelin/html2md-clean): turn web pages into clean
   Markdown with only the standard library, dropping navigation and boilerplate while keeping
   headings, lists, links, code and tables.
+- [pdf2chunks](https://github.com/GuiDobelin/pdf2chunks): turn PDFs into JSONL chunks with page
+  numbers and metadata, removing running headers, footers and hyphenation before chunking.
 
 ## Development
 
