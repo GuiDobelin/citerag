@@ -85,6 +85,8 @@ passages back verbatim, with no LLM involved.
 | `POST`   | `/documents`          | Upload a file (multipart `file`). Returns `doc_id`.  |
 | `POST`   | `/documents/url`      | `{"url": "https://..."}`: fetch and index a page.    |
 | `GET`    | `/documents`          | List indexed documents.                              |
+| `GET`    | `/jobs`               | List background ingestion jobs (`?status=failed`).   |
+| `GET`    | `/jobs/{job_id}`      | Status and result of one background ingestion job.   |
 | `DELETE` | `/documents/{doc_id}` | Remove a document and its chunks.                    |
 | `POST`   | `/query`              | `{"question": "...", "top_k": 5, "doc_ids": [...]}`  |
 | `POST`   | `/query/stream`       | Same body as `/query`; streams Server-Sent Events.   |
@@ -171,6 +173,75 @@ for (;;) {
 From the command line, `citerag ask` streams by default; pass `--no-stream` to print the answer
 only once it is complete.
 
+### Background ingestion
+
+Large files and slow web pages can take a while to index. Pass `wait=false` and the API
+answers `202 Accepted` at once, with a job to poll in the `Location` header:
+
+```bash
+curl -i -X POST "http://localhost:8000/documents?wait=false" -F "file=@services-agreement.pdf"
+```
+
+```text
+HTTP/1.1 202 Accepted
+date: Thu, 19 Nov 2026 12:14:19 GMT
+server: uvicorn
+location: /jobs/b5cb2a357dbe4865b6d3519415647675
+content-length: 214
+content-type: application/json
+
+{"id":"b5cb2a357dbe4865b6d3519415647675","kind":"file","source":"services-agreement.pdf","status":"queued","created_at":"2026-11-19T12:14:19.700695Z","started_at":null,"finished_at":null,"result":null,"error":null}
+```
+
+For a URL, send `"wait": false` in the body (or `?wait=false`, which takes precedence):
+
+```bash
+curl -X POST http://localhost:8000/documents/url \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://example.com/handbook", "wait": false}'
+```
+
+Then poll the job until its `status` is `succeeded` or `failed`:
+
+```bash
+curl http://localhost:8000/jobs/b5cb2a357dbe4865b6d3519415647675
+```
+
+```json
+{
+  "id": "b5cb2a357dbe4865b6d3519415647675",
+  "kind": "file",
+  "source": "services-agreement.pdf",
+  "status": "succeeded",
+  "created_at": "2026-11-19T12:14:19.700695Z",
+  "started_at": "2026-11-19T12:14:19.700911Z",
+  "finished_at": "2026-11-19T12:14:21.204004Z",
+  "result": {"doc_id": "9f2c41d07a3be2c1", "source": "services-agreement.pdf", "chunks": 38},
+  "error": null
+}
+```
+
+A job goes `queued` → `running` → `succeeded` or `failed`. On success, `result` is exactly what
+the synchronous call returns (`doc_id`, `source`, `chunks`). On failure, `result` is `null` and
+`error` holds the message the synchronous call would have sent as its error `detail`, for
+example `"No extractable text found in 'scan.pdf'."` or `"'intranet.local' resolves to a
+non-public address (10.0.0.5). Set CITERAG_ALLOW_PRIVATE_URLS=true to allow internal hosts."`.
+Unexpected errors are logged on the server and reported only as `"Internal error while
+ingesting the document."`.
+
+Problems that can be found without doing the work are still reported at once: a file over
+`CITERAG_MAX_UPLOAD_MB` gets `413`, and an invalid URL, a non-http(s) scheme or a private IP
+address written literally gets `400`. Whether a host *name* resolves to a private address is
+only known when the job fetches it, so that shows up as a failed job. When
+`CITERAG_MAX_PENDING_JOBS` jobs are already queued or running, or the server is shutting down,
+the API answers `503` (with `Retry-After: 5` when the queue is full); jobs still queued at
+shutdown are marked `failed`.
+
+`GET /jobs` lists the jobs this server process still remembers, newest first; filter with
+`?status=queued|running|succeeded|failed`. Finished jobs are kept for `CITERAG_JOB_TTL` seconds
+(or until `CITERAG_MAX_JOBS` are retained, oldest first), after which `GET /jobs/{job_id}`
+returns `404`.
+
 ### Ingesting web pages
 
 `POST /documents/url` and `citerag ingest` accept `http(s)://` URLs of web pages and of PDF,
@@ -219,6 +290,10 @@ All settings are environment variables (or entries in `.env`).
 | `CITERAG_MAX_UPLOAD_MB`    | `25`                     | Size limit for uploads and downloaded URLs.      |
 | `CITERAG_ALLOW_PRIVATE_URLS` | `false`                | Allow URLs on private or internal addresses.     |
 | `CITERAG_URL_TIMEOUT`      | `10`                     | Seconds allowed to download a URL, redirects included. |
+| `CITERAG_JOB_WORKERS`      | `2`                      | Background ingestion jobs that run at the same time. |
+| `CITERAG_JOB_TTL`          | `3600`                   | Seconds a finished job stays visible at `/jobs`. |
+| `CITERAG_MAX_JOBS`         | `1000`                   | Jobs retained in memory; the oldest finished ones are dropped first. |
+| `CITERAG_MAX_PENDING_JOBS` | `20`                     | Queued plus running jobs before new ones get `503`. Each holds its upload in memory. |
 
 [models]: https://qdrant.github.io/fastembed/examples/Supported_Models/
 [rerankers]: https://qdrant.github.io/fastembed/examples/Supported_Models/#supported-rerank-cross-encoder-models
@@ -265,11 +340,15 @@ it instead of duplicating it.
   (on its first query). The same applies to a running API when you ingest into the same
   Qdrant with the CLI. Until the keyword index is shared, use `CITERAG_RETRIEVAL_MODE=vector`
   in those setups, or restart the API after ingesting.
+- **Background jobs:** jobs live in the memory of the API process that accepted them. They
+  are lost on restart, and with several replicas each one only knows its own jobs, so poll
+  `GET /jobs/{job_id}` through sticky sessions or on the same instance. The indexed documents
+  themselves are in the store and are not affected.
 - **Costs:** lower `CITERAG_CLAUDE_EFFORT` or `CITERAG_TOP_K`, or use a smaller model.
 
 ## Roadmap
 
-- [ ] Background ingestion queue for large uploads
+- [x] Background ingestion queue for large uploads
 - [x] Hybrid search (BM25 + vectors with RRF)
 - [x] Optional cross-encoder reranking
 - [x] Streaming answers (SSE)
