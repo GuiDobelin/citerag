@@ -346,6 +346,23 @@ it instead of duplicating it.
   themselves are in the store and are not affected.
 - **Costs:** lower `CITERAG_CLAUDE_EFFORT` or `CITERAG_TOP_K`, or use a smaller model.
 
+## Evaluation
+
+Score retrieval quality against a labelled JSON Lines dataset:
+
+```json
+{"question": "Who hosts Web Summit?", "relevant": [{"source": "a.txt", "contains": "Summit"}]}
+{"question": "Revenue in 2025?", "relevant": [{"source": "report.pdf", "page": 3}], "id": "q2"}
+{"question": "Capital of Germany?", "relevant": ["berlin.md"]}
+```
+
+```bash
+citerag eval dataset.jsonl --k 5 --mode hybrid      # recall@k, MRR@k and hit rate@k
+citerag eval dataset.jsonl --mode all               # compare vector, keyword and hybrid
+citerag eval dataset.jsonl --details                # list missed questions and retrieved sources
+citerag eval dataset.jsonl --json                   # machine-readable EvalReport JSON
+```
+
 ## Roadmap
 
 - [x] Background ingestion queue for large uploads

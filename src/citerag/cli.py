@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import httpx
 import typer
 
+from citerag.evaluation import DatasetError, EvalReport, evaluate, load_dataset
 from citerag.llm import GenerationError
 from citerag.models import Answer, Citation, Done, RetrievalMode, TextDelta
 from citerag.pipeline import RAG, RETRIEVAL_MODES
@@ -187,6 +189,80 @@ def delete(doc_id: str = typer.Argument(..., help="Id of the document, as shown 
         typer.secho(f"No document with id '{_one_line(doc_id)}'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     typer.echo(f"deleted  {_one_line(doc_id)}")
+
+
+def _print_eval_table(reports: list[EvalReport]) -> None:
+    headers = ("Mode", f"Recall@{reports[0].k}", f"MRR@{reports[0].k}", f"Hit rate@{reports[0].k}")
+    rows = [(r.mode, f"{r.recall:.3f}", f"{r.mrr:.3f}", f"{r.hit_rate:.3f}") for r in reports]
+    widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
+    typer.echo("  ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True)))
+    typer.echo("  ".join("-" * w for w in widths))
+    for row in rows:
+        typer.echo("  ".join(val.ljust(w) for val, w in zip(row, widths, strict=True)))
+
+
+def _print_eval_details(reports: list[EvalReport]) -> None:
+    for report in reports:
+        missed = [r for r in report.results if not r.hit]
+        if not missed:
+            continue
+        typer.echo(f"\nMissed ({report.mode}):")
+        for case in missed:
+            label = _one_line(case.id) if case.id else _one_line(case.question)
+            got = ", ".join(dict.fromkeys(_one_line(h.source) for h in case.retrieved)) or "(none)"
+            typer.echo(f"  - {label}: retrieved [{got}]")
+
+
+@app.command("eval")
+def eval_command(
+    dataset: Path = typer.Argument(..., help="Path to a JSON Lines evaluation dataset."),
+    k: int = typer.Option(5, "--k", min=1, help="Number of top hits to score."),
+    mode: str | None = typer.Option(
+        None,
+        "--mode",
+        help="Retrieval mode: vector, keyword, hybrid, or all.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+    details: bool = typer.Option(
+        False, "--details", help="List missed questions and retrieved sources."
+    ),
+):
+    """Score retrieval quality against a labelled JSON Lines dataset."""
+    valid_modes = (*RETRIEVAL_MODES, "all")
+    if mode is not None and mode not in valid_modes:
+        raise typer.BadParameter(f"must be one of {', '.join(valid_modes)}")
+
+    try:
+        cases = load_dataset(dataset)
+    except (DatasetError, OSError) as exc:
+        typer.secho(_one_line(str(exc)), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    rag = RAG.from_settings()
+    indexed_sources = {d.source for d in rag.documents()}
+    for source in dict.fromkeys(p.source for case in cases for p in case.relevant):
+        if source not in indexed_sources:
+            typer.secho(
+                f"warning: source '{_one_line(source)}' is not indexed.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+    modes: tuple[RetrievalMode, ...] = (
+        RETRIEVAL_MODES if mode == "all" else (rag.retrieval_mode if mode is None else mode,)  # type: ignore[assignment]
+    )
+    reports = [evaluate(rag, cases, k=k, mode=m) for m in modes]
+
+    if as_json:
+        if len(reports) == 1:
+            typer.echo(reports[0].model_dump_json(indent=2))
+        else:
+            typer.echo(json.dumps([r.model_dump(mode="json") for r in reports], indent=2))
+        return
+
+    _print_eval_table(reports)
+    if details:
+        _print_eval_details(reports)
 
 
 @app.command()
