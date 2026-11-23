@@ -150,6 +150,9 @@ def test_parse_dataset_deduplicates_relevant_passages():
         (line({"question": "Q", "relevant": [{"source": "a", "contains": " \n"}]}), "contains"),
         (line({"question": "Q", "relevant": [{"source": "a", "contain": "typo"}]}), "contain"),
         (line({"question": "Q", "relevant": ["a"], "answer": "unknown field"}), "answer"),
+        (line({"question": "Q", "relevant": [{"source": "a", "page": True}]}), "page"),
+        (line({"question": "Q", "relevant": [{"source": "a", "page": "3"}]}), "page"),
+        ("[" * 100_000, "nested too deeply"),
     ],
 )
 def test_parse_dataset_reports_the_bad_line(bad_line, message):
@@ -157,6 +160,19 @@ def test_parse_dataset_reports_the_bad_line(bad_line, message):
     with pytest.raises(DatasetError, match="line 3") as exc_info:
         parse_dataset([good, "", bad_line])
     assert message in str(exc_info.value)
+
+
+def test_nested_type_errors_name_the_field_not_the_line():
+    with pytest.raises(DatasetError) as exc_info:
+        parse_dataset([line({"question": "Q", "relevant": [["a.md"]]})])
+    assert "relevant.0" in str(exc_info.value)
+    assert "JSON object" not in str(exc_info.value)
+
+
+def test_parse_dataset_rejects_duplicate_ids():
+    lines = [line({"question": f"Q{n}", "relevant": ["a"], "id": "q"}) for n in range(2)]
+    with pytest.raises(DatasetError, match="line 2: id 'q' is already used on line 1"):
+        parse_dataset(lines)
 
 
 def test_parse_dataset_rejects_an_empty_dataset():
@@ -170,6 +186,16 @@ def test_load_dataset_reads_utf8_with_bom(tmp_path):
     path.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
     [case] = load_dataset(path)
     assert case.question == "Onde fica Lisboa?"
+
+
+def test_load_dataset_keeps_unicode_line_separators_inside_strings(tmp_path):
+    path = tmp_path / "qa.jsonl"
+    question = "first\u2028second\x85third"
+    rows = [{"question": question, "relevant": ["a"]}, {"question": "Q2", "relevant": ["b"]}]
+    content = "\r\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+    path.write_text(content, encoding="utf-8", newline="")
+    cases = load_dataset(path)
+    assert [c.question for c in cases] == [question, "Q2"]
 
 
 def test_load_dataset_rejects_non_utf8(tmp_path):
