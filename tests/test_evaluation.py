@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 from conftest import BERLIN, LISBON
@@ -9,6 +10,7 @@ from citerag.evaluation import (
     RelevantPassage,
     evaluate,
     load_dataset,
+    ndcg_at_k,
     parse_dataset,
     recall_at_k,
     reciprocal_rank,
@@ -105,7 +107,27 @@ def test_reciprocal_rank_is_zero_without_a_relevant_hit_in_the_top_k():
     assert reciprocal_rank([], [LISBON_PASSAGE], k=1) == 0.0
 
 
-@pytest.mark.parametrize("metric", [recall_at_k, reciprocal_rank])
+def test_ndcg_is_one_for_perfect_ranking():
+    hits = [hit("lisbon.txt"), hit("berlin.md"), hit("other.txt")]
+    assert ndcg_at_k(hits, [LISBON_PASSAGE, BERLIN_PASSAGE], k=3) == pytest.approx(1.0)
+    assert ndcg_at_k(hits[:1], [LISBON_PASSAGE, BERLIN_PASSAGE], k=1) == pytest.approx(1.0)
+
+
+def test_ndcg_is_zero_without_a_relevant_hit_in_the_top_k():
+    hits = [hit("x.txt"), hit("lisbon.txt")]
+    assert ndcg_at_k(hits, [LISBON_PASSAGE], k=1) == 0.0
+    assert ndcg_at_k([], [LISBON_PASSAGE], k=3) == 0.0
+
+
+def test_ndcg_hand_computed_with_duplicate_passage():
+    hits = [hit("other.txt"), hit("lisbon.txt", n=0), hit("lisbon.txt", n=1), hit("berlin.md")]
+    # Relevant hits at rank 2 (lisbon) and rank 4 (berlin); rank 3 is a duplicate of lisbon -> 0.
+    dcg = 1 / math.log2(2 + 1) + 1 / math.log2(4 + 1)
+    idcg = 1 / math.log2(1 + 1) + 1 / math.log2(2 + 1)
+    assert ndcg_at_k(hits, [LISBON_PASSAGE, BERLIN_PASSAGE], k=4) == pytest.approx(dcg / idcg)
+
+
+@pytest.mark.parametrize("metric", [recall_at_k, reciprocal_rank, ndcg_at_k])
 def test_metrics_reject_bad_arguments(metric):
     with pytest.raises(ValueError, match="k must be"):
         metric([], [LISBON_PASSAGE], k=0)
@@ -237,12 +259,18 @@ def test_evaluate_scores_every_mode(indexed, mode):
     assert not report.reranked
     summit, python, missing = report.results
     assert summit.id == "summit"
-    assert summit.hit and summit.recall == 1.0
-    assert missing.recall == 0.0 and missing.reciprocal_rank == 0.0 and not missing.hit
+    assert summit.hit and summit.recall == 1.0 and summit.ndcg > 0.0
+    assert (
+        missing.recall == 0.0
+        and missing.reciprocal_rank == 0.0
+        and missing.ndcg == 0.0
+        and not missing.hit
+    )
     assert all(not r.relevant for r in missing.retrieved)
     assert len(summit.retrieved) <= 3
     assert report.recall == pytest.approx(sum(r.recall for r in report.results) / 3)
     assert report.mrr == pytest.approx(sum(r.reciprocal_rank for r in report.results) / 3)
+    assert report.ndcg == pytest.approx(sum(r.ndcg for r in report.results) / 3)
     assert report.hit_rate == pytest.approx(sum(r.hit for r in report.results) / 3)
 
 
@@ -250,6 +278,7 @@ def test_evaluate_keyword_mode_ranks_exact_terms_first(indexed):
     report = evaluate(indexed, CASES[:2], k=1, mode="keyword")
     assert report.recall == 1.0
     assert report.mrr == 1.0
+    assert report.ndcg == 1.0
     assert report.results[0].retrieved[0].source == "lisbon.txt"
     assert report.results[0].retrieved[0].relevant
 
@@ -271,7 +300,7 @@ def test_evaluate_reports_reranking(indexed):
 
 def test_evaluate_report_is_json_serializable(indexed):
     data = json.loads(evaluate(indexed, CASES, k=2).model_dump_json())
-    assert set(data) >= {"k", "mode", "recall", "mrr", "hit_rate", "results"}
+    assert set(data) >= {"k", "mode", "recall", "mrr", "ndcg", "hit_rate", "results"}
 
 
 def test_evaluate_rejects_bad_arguments(indexed):
