@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+### Added
+
+- Background ingestion jobs. `citerag.jobs.JobManager` runs ingestion on a bounded thread pool,
+  keeps job snapshots for a configurable time and fails queued jobs cleanly on shutdown (#40, #45).
+- Asynchronous uploads: `POST /documents?wait=false` returns `202 Accepted` with a `Location`
+  header pointing to `GET /jobs/{id}`, which reports `queued`, `running`, `succeeded` or
+  `failed` with the result or error (#41, #47).
+- Asynchronous URL ingestion with `"wait": false` in the body (or `?wait=false`) on
+  `POST /documents/url`. Errors that need no network, such as a private IP literal, are still
+  rejected synchronously (#42, #48).
+- `GET /jobs` endpoint listing the known jobs (#43, #46).
+- `CITERAG_JOB_WORKERS`, `CITERAG_JOB_TTL`, `CITERAG_MAX_JOBS` and `CITERAG_MAX_PENDING_JOBS`
+  settings. A full queue or a shutting-down server answers `503` with `Retry-After` (#40, #47).
+- "Background ingestion" section in the README with request/response examples (#44, #50).
+- `pdf2chunks` added to the README's "Ecosystem" section (#49).
+
+### Changed
+
+- The API's lifespan now shuts the job manager down when the server stops (#47).
+
 ## [0.4.0] - 2026-11-13
 
 ### Added
@@ -89,7 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files and answer questions with verifiable citations, using Claude or an offline extractive
   generator, with an in-process vector store or Qdrant.
 
-[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/GuiDobelin/citerag/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/GuiDobelin/citerag/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/GuiDobelin/citerag/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/GuiDobelin/citerag/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GuiDobelin/citerag/compare/v0.1.0...v0.2.0
