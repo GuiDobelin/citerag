@@ -10,6 +10,9 @@ Relevant passages are described by their `source` (as `citerag list` shows it), 
 narrowed by `page` and by a `contains` snippet, rather than by chunk id, so the judgements
 still hold after changing the chunk size or re-ingesting. A plain string is shorthand for
 `{"source": ...}`.
+
+A `contains` snippet must fall inside one chunk to match, so keep it short (a phrase or a
+sentence, well under `CITERAG_CHUNK_SIZE`).
 """
 
 import json
@@ -18,7 +21,7 @@ import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
 
 from citerag.models import Chunk, Hit, RetrievalMode
 from citerag.pipeline import RAG
@@ -41,7 +44,8 @@ class RelevantPassage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     source: str = Field(min_length=1)
-    page: int | None = Field(default=None, ge=1)
+    # Strict so a typo such as `"page": true` is an error rather than page 1.
+    page: StrictInt | None = Field(default=None, ge=1)
     contains: str | None = None
 
     @field_validator("contains")
@@ -94,15 +98,25 @@ def parse_dataset(lines: Iterable[str]) -> list[EvalCase]:
     """Parse JSON Lines into cases. Blank lines are skipped; any other bad line raises
     `DatasetError` with its 1-based line number."""
     cases = []
+    seen_ids: dict[str, int] = {}
     for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
-            cases.append(EvalCase.model_validate(json.loads(line)))
+            case = EvalCase.model_validate(json.loads(line))
         except json.JSONDecodeError as exc:
             raise DatasetError(f"line {number}: invalid JSON: {exc.msg}") from exc
+        except RecursionError as exc:
+            raise DatasetError(f"line {number}: JSON is nested too deeply") from exc
         except ValidationError as exc:
             raise DatasetError(f"line {number}: {_describe(exc)}") from exc
+        if case.id is not None:
+            if case.id in seen_ids:
+                raise DatasetError(
+                    f"line {number}: id {case.id!r} is already used on line {seen_ids[case.id]}"
+                )
+            seen_ids[case.id] = number
+        cases.append(case)
     if not cases:
         raise DatasetError("the dataset has no questions")
     return cases
@@ -114,12 +128,14 @@ def load_dataset(path: str | Path) -> list[EvalCase]:
         text = Path(path).read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         raise DatasetError(f"{path} is not valid UTF-8") from exc
-    return parse_dataset(text.splitlines())
+    # Split on newlines only: str.splitlines() would also break on U+2028 and friends, which
+    # JSON allows unescaped inside strings. A trailing "\r" is JSON whitespace.
+    return parse_dataset(text.split("\n"))
 
 
 def _describe(exc: ValidationError) -> str:
     errors = exc.errors(include_url=False)
-    if errors and errors[0]["type"] == "model_type":
+    if errors and errors[0]["type"] == "model_type" and not errors[0]["loc"]:
         return "each line must be a JSON object"
     return "; ".join(
         f"{'.'.join(str(part) for part in error['loc']) or 'value'}: {error['msg']}"
@@ -134,22 +150,32 @@ def _check(relevant: Sequence[RelevantPassage], k: int) -> None:
         raise ValueError("relevant must not be empty.")
 
 
-def recall_at_k(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
-    """Share of the relevant passages matched by at least one of the top `k` hits."""
+def _match_matrix(
+    hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int
+) -> list[list[bool]]:
+    """`matrix[i][j]` is whether the i-th of the top `k` hits matches the j-th distinct passage."""
     _check(relevant, k)
     passages = list(dict.fromkeys(relevant))
-    top = hits[:k]
-    found = sum(any(p.matches(hit.chunk) for hit in top) for p in passages)
-    return found / len(passages)
+    return [[p.matches(hit.chunk) for p in passages] for hit in hits[:k]]
+
+
+def _recall(matrix: list[list[bool]], passages: int) -> float:
+    return sum(any(row[j] for row in matrix) for j in range(passages)) / passages
+
+
+def _reciprocal_rank(matrix: list[list[bool]]) -> float:
+    return next((1 / rank for rank, row in enumerate(matrix, start=1) if any(row)), 0.0)
+
+
+def recall_at_k(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
+    """Share of the relevant passages matched by at least one of the top `k` hits."""
+    matrix = _match_matrix(hits, relevant, k)
+    return _recall(matrix, len(set(relevant)))
 
 
 def reciprocal_rank(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
     """1 / rank of the first of the top `k` hits that matches a relevant passage, else 0."""
-    _check(relevant, k)
-    for rank, hit in enumerate(hits[:k], start=1):
-        if any(p.matches(hit.chunk) for p in relevant):
-            return 1 / rank
-    return 0.0
+    return _reciprocal_rank(_match_matrix(hits, relevant, k))
 
 
 class RetrievedChunk(BaseModel):
@@ -196,12 +222,13 @@ def evaluate(
     results = []
     for case in cases:
         hits = rag.retrieve(case.question, k=k, mode=mode)
-        rr = reciprocal_rank(hits, case.relevant, k)
+        matrix = _match_matrix(hits, case.relevant, k)
+        rr = _reciprocal_rank(matrix)
         results.append(
             CaseResult(
                 id=case.id,
                 question=case.question,
-                recall=recall_at_k(hits, case.relevant, k),
+                recall=_recall(matrix, len(case.relevant)),
                 reciprocal_rank=rr,
                 hit=rr > 0,
                 retrieved=[
@@ -209,9 +236,9 @@ def evaluate(
                         chunk_id=hit.chunk.id,
                         source=hit.chunk.source,
                         page=hit.chunk.page,
-                        relevant=any(p.matches(hit.chunk) for p in case.relevant),
+                        relevant=any(row),
                     )
-                    for hit in hits[:k]
+                    for hit, row in zip(hits, matrix, strict=False)
                 ],
             )
         )
