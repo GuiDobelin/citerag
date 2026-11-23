@@ -167,6 +167,18 @@ def _reciprocal_rank(matrix: list[list[bool]]) -> float:
     return next((1 / rank for rank, row in enumerate(matrix, start=1) if any(row)), 0.0)
 
 
+def _ndcg(matrix: list[list[bool]], passages: int, k: int) -> float:
+    seen: set[int] = set()
+    dcg = 0.0
+    for rank, row in enumerate(matrix, start=1):
+        new_matches = [j for j, matched in enumerate(row) if matched and j not in seen]
+        if new_matches:
+            seen.update(new_matches)
+            dcg += 1.0 / math.log2(rank + 1)
+    idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(passages, k) + 1))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
 def recall_at_k(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
     """Share of the relevant passages matched by at least one of the top `k` hits."""
     matrix = _match_matrix(hits, relevant, k)
@@ -176,6 +188,12 @@ def recall_at_k(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int
 def reciprocal_rank(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
     """1 / rank of the first of the top `k` hits that matches a relevant passage, else 0."""
     return _reciprocal_rank(_match_matrix(hits, relevant, k))
+
+
+def ndcg_at_k(hits: Sequence[Hit], relevant: Sequence[RelevantPassage], k: int) -> float:
+    """Binary nDCG within the top `k` hits; each relevant passage counts at most once."""
+    matrix = _match_matrix(hits, relevant, k)
+    return _ndcg(matrix, len(set(relevant)), k)
 
 
 class RetrievedChunk(BaseModel):
@@ -190,13 +208,15 @@ class CaseResult(BaseModel):
     question: str
     recall: float
     reciprocal_rank: float
+    ndcg: float
     hit: bool
     retrieved: list[RetrievedChunk]
 
 
 class EvalReport(BaseModel):
     """Per-question results and their means. `mrr` is the mean reciprocal rank within the
-    top `k`, and `hit_rate` the share of questions with at least one relevant hit."""
+    top `k`, `ndcg` the mean normalized discounted cumulative gain, and `hit_rate` the share of
+    questions with at least one relevant hit."""
 
     k: int
     mode: RetrievalMode
@@ -204,6 +224,7 @@ class EvalReport(BaseModel):
     questions: int
     recall: float
     mrr: float
+    ndcg: float
     hit_rate: float
     results: list[CaseResult]
 
@@ -230,6 +251,7 @@ def evaluate(
                 question=case.question,
                 recall=_recall(matrix, len(case.relevant)),
                 reciprocal_rank=rr,
+                ndcg=_ndcg(matrix, len(case.relevant), k),
                 hit=rr > 0,
                 retrieved=[
                     RetrievedChunk(
@@ -249,6 +271,7 @@ def evaluate(
         questions=len(results),
         recall=math.fsum(r.recall for r in results) / len(results),
         mrr=math.fsum(r.reciprocal_rank for r in results) / len(results),
+        ndcg=math.fsum(r.ndcg for r in results) / len(results),
         hit_rate=sum(r.hit for r in results) / len(results),
         results=results,
     )
