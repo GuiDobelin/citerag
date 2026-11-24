@@ -405,8 +405,8 @@ set, the reranker is part of what is measured and the output says so. `--details
 questions with no relevant hit and the sources retrieved instead. `--json` prints a JSON
 array with one full report per mode (per-question scores and retrieved chunks included),
 handy for tracking regressions in CI. A `source` that is not indexed only prints a warning
-(it scores as a miss); a missing file or a malformed line exits with status 1 and names the
-line.
+(it scores as a miss). A missing dataset file exits with status 1, and so does a malformed
+line, with its line number in the message.
 
 ## Roadmap
 

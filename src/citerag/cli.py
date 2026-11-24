@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import cast
 
 import httpx
 import typer
@@ -207,7 +208,8 @@ def _print_eval_table(reports: list[EvalReport]) -> None:
     typer.echo("  ".join("-" * w for w in widths))
     for row in rows:
         typer.echo("  ".join(val.ljust(w) for val, w in zip(row, widths, strict=True)).rstrip())
-    typer.echo(f"\n{reports[0].questions} questions")
+    n = reports[0].questions
+    typer.echo(f"\n{n} question{'' if n == 1 else 's'}")
     if reports[0].reranked:
         typer.echo("Hits were reranked (CITERAG_RERANKER), so the scores include the reranker.")
 
@@ -263,7 +265,8 @@ def eval_command(
                 err=True,
             )
 
-    modes: tuple[RetrievalMode | None, ...] = RETRIEVAL_MODES if mode == "all" else (mode,)  # type: ignore[assignment]
+    # `_check_mode` has narrowed `mode` to a retrieval mode, "all" or None.
+    modes = RETRIEVAL_MODES if mode == "all" else (cast(RetrievalMode | None, mode),)
     reports = [evaluate(rag, cases, k=k, mode=m) for m in modes]
 
     if as_json:
