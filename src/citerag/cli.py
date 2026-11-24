@@ -144,6 +144,11 @@ def _ask_streaming(
         raise
 
 
+def _check_mode(mode: str | None, allowed: tuple[str, ...]) -> None:
+    if mode is not None and mode not in allowed:
+        raise typer.BadParameter(f"must be one of {', '.join(allowed)}", param_hint="'--mode'")
+
+
 @app.command()
 def ask(
     question: str,
@@ -156,8 +161,7 @@ def ask(
     ),
 ):
     """Ask a question about the indexed documents."""
-    if mode is not None and mode not in RETRIEVAL_MODES:
-        raise typer.BadParameter(f"must be one of {', '.join(RETRIEVAL_MODES)}")
+    _check_mode(mode, RETRIEVAL_MODES)
     rag = RAG.from_settings()
     try:
         if stream:
@@ -192,13 +196,20 @@ def delete(doc_id: str = typer.Argument(..., help="Id of the document, as shown 
 
 
 def _print_eval_table(reports: list[EvalReport]) -> None:
-    headers = ("Mode", f"Recall@{reports[0].k}", f"MRR@{reports[0].k}", f"Hit rate@{reports[0].k}")
-    rows = [(r.mode, f"{r.recall:.3f}", f"{r.mrr:.3f}", f"{r.hit_rate:.3f}") for r in reports]
+    k = reports[0].k
+    headers = ("Mode", f"Recall@{k}", f"MRR@{k}", f"nDCG@{k}", f"Hit rate@{k}")
+    rows = [
+        (r.mode, f"{r.recall:.3f}", f"{r.mrr:.3f}", f"{r.ndcg:.3f}", f"{r.hit_rate:.3f}")
+        for r in reports
+    ]
     widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
-    typer.echo("  ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True)))
+    typer.echo("  ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True)).rstrip())
     typer.echo("  ".join("-" * w for w in widths))
     for row in rows:
-        typer.echo("  ".join(val.ljust(w) for val, w in zip(row, widths, strict=True)))
+        typer.echo("  ".join(val.ljust(w) for val, w in zip(row, widths, strict=True)).rstrip())
+    typer.echo(f"\n{reports[0].questions} questions")
+    if reports[0].reranked:
+        typer.echo("Hits were reranked (CITERAG_RERANKER), so the scores include the reranker.")
 
 
 def _print_eval_details(reports: list[EvalReport]) -> None:
@@ -216,21 +227,25 @@ def _print_eval_details(reports: list[EvalReport]) -> None:
 @app.command("eval")
 def eval_command(
     dataset: Path = typer.Argument(..., help="Path to a JSON Lines evaluation dataset."),
-    k: int = typer.Option(5, "--k", min=1, help="Number of top hits to score."),
+    k: int | None = typer.Option(
+        None, "--k", min=1, help="Number of top hits to score [default: CITERAG_TOP_K]."
+    ),
     mode: str | None = typer.Option(
         None,
         "--mode",
-        help="Retrieval mode: vector, keyword, hybrid, or all.",
+        help="Retrieval mode: vector, keyword, hybrid, or all [default: CITERAG_RETRIEVAL_MODE].",
     ),
-    as_json: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print a JSON array with one report per mode."
+    ),
     details: bool = typer.Option(
         False, "--details", help="List missed questions and retrieved sources."
     ),
 ):
-    """Score retrieval quality against a labelled JSON Lines dataset."""
-    valid_modes = (*RETRIEVAL_MODES, "all")
-    if mode is not None and mode not in valid_modes:
-        raise typer.BadParameter(f"must be one of {', '.join(valid_modes)}")
+    """Score retrieval quality against a labelled JSON Lines dataset.
+
+    Exits with status 1 if the dataset is missing or malformed."""
+    _check_mode(mode, (*RETRIEVAL_MODES, "all"))
 
     try:
         cases = load_dataset(dataset)
@@ -248,16 +263,12 @@ def eval_command(
                 err=True,
             )
 
-    modes: tuple[RetrievalMode, ...] = (
-        RETRIEVAL_MODES if mode == "all" else (rag.retrieval_mode if mode is None else mode,)  # type: ignore[assignment]
-    )
+    modes: tuple[RetrievalMode | None, ...] = RETRIEVAL_MODES if mode == "all" else (mode,)  # type: ignore[assignment]
     reports = [evaluate(rag, cases, k=k, mode=m) for m in modes]
 
     if as_json:
-        if len(reports) == 1:
-            typer.echo(reports[0].model_dump_json(indent=2))
-        else:
-            typer.echo(json.dumps([r.model_dump(mode="json") for r in reports], indent=2))
+        # Always an array, so scripts don't have to special-case `--mode all`.
+        typer.echo(json.dumps([r.model_dump(mode="json") for r in reports], indent=2))
         return
 
     _print_eval_table(reports)
