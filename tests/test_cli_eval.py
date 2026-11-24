@@ -137,8 +137,8 @@ def test_eval_notes_when_a_reranker_is_configured(use_rag, tmp_path):
 def test_eval_exits_one_when_the_dataset_is_missing(use_rag, tmp_path):
     result = runner.invoke(app, ["eval", str(tmp_path / "nope.jsonl")])
     assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)  # a clean exit, not an uncaught error
     assert "nope.jsonl" in result.output
-    assert "Traceback" not in result.output
 
 
 def test_eval_and_ask_reject_unknown_modes_the_same_way(use_rag, tmp_path):
@@ -147,4 +147,11 @@ def test_eval_and_ask_reject_unknown_modes_the_same_way(use_rag, tmp_path):
     asked = runner.invoke(app, ["ask", "Q", "--mode", "fuzzy"])
     assert evaluated.exit_code == asked.exit_code == 2
     assert "--mode" in evaluated.output and "--mode" in asked.output
-    assert "all" in evaluated.output and "all" not in asked.output
+    assert "vector, keyword, hybrid, all" in evaluated.output
+    assert "vector, keyword, hybrid" in asked.output
+    assert "hybrid, all" not in asked.output
+
+
+def test_eval_pluralises_the_question_count(use_rag, tmp_path):
+    dataset = _write_dataset(tmp_path, [{"question": "Web Summit?", "relevant": ["lisbon.txt"]}])
+    assert "\n1 question\n" in runner.invoke(app, ["eval", str(dataset)]).stdout
