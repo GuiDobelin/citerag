@@ -72,6 +72,7 @@ citerag ingest https://docs.python.org/3/tutorial/venv.html   # or a web page
 citerag ask "Summarise the refund policy"   # streams the answer; --no-stream waits for it
 citerag list                   # show indexed documents and their ids
 citerag delete DOC_ID          # remove a document
+citerag eval qa.jsonl          # score retrieval on labelled questions (see Evaluation)
 citerag serve                  # start the API on :8000
 ```
 
@@ -348,20 +349,64 @@ it instead of duplicating it.
 
 ## Evaluation
 
-Score retrieval quality against a labelled JSON Lines dataset:
+`citerag eval` measures how well retrieval finds the passages that answer your questions,
+on your own corpus, without calling an LLM. Write a labelled dataset as JSON Lines, one
+question per line:
 
 ```json
-{"question": "Who hosts Web Summit?", "relevant": [{"source": "a.txt", "contains": "Summit"}]}
-{"question": "Revenue in 2025?", "relevant": [{"source": "report.pdf", "page": 3}], "id": "q2"}
-{"question": "Capital of Germany?", "relevant": ["berlin.md"]}
+{"id": "summit", "question": "Which city hosts Web Summit?", "relevant": [{"source": "lisbon.txt", "contains": "Web Summit"}]}
+{"question": "Revenue in 2025?", "relevant": [{"source": "report.pdf", "page": 3}]}
+{"question": "Where are Python developers hired?", "relevant": ["berlin.md"]}
 ```
 
+- `question` (required) is sent to retrieval as is.
+- `relevant` (required, non-empty) lists the passages that answer it. `source` is the document
+  name as `citerag list` shows it (the file name, or the final URL of a web page). `page`
+  narrows it to one page of a PDF, and `contains` to the chunks that include a snippet
+  (case and whitespace are ignored). Keep `contains` to a phrase: it must fit inside one
+  chunk. A plain string such as `"berlin.md"` is shorthand for `{"source": "berlin.md"}`.
+  Judging by source rather than chunk id keeps the dataset valid when you change the chunk
+  size or re-ingest.
+- `id` (optional, unique) names the question in reports.
+
+Then score it against the index:
+
 ```bash
-citerag eval dataset.jsonl --k 5 --mode hybrid      # recall@k, MRR@k and hit rate@k
-citerag eval dataset.jsonl --mode all               # compare vector, keyword and hybrid
-citerag eval dataset.jsonl --details                # list missed questions and retrieved sources
-citerag eval dataset.jsonl --json                   # machine-readable EvalReport JSON
+citerag eval qa.jsonl                    # configured mode and CITERAG_TOP_K
+citerag eval qa.jsonl --k 2 --mode all --details
 ```
+
+```text
+warning: source 'madrid.txt' is not indexed.
+Mode     Recall@2  MRR@2  nDCG@2  Hit rate@2
+-------  --------  -----  ------  ----------
+vector   0.750     0.750  0.750   0.750
+keyword  0.750     0.750  0.750   0.750
+hybrid   0.750     0.750  0.750   0.750
+
+4 questions
+
+Missed (vector):
+  - madrid: retrieved [lisbon.txt, berlin.md]
+...
+```
+
+All metrics look at the top `k` hits and are averaged over the questions:
+
+| Metric | Meaning |
+|---|---|
+| Recall@k | Share of a question's relevant passages found by at least one hit |
+| MRR@k | 1 / rank of the first relevant hit (0 if none) |
+| nDCG@k | Rewards relevant hits near the top; binary relevance, each passage counted once |
+| Hit rate@k | Share of questions with at least one relevant hit |
+
+`--mode all` runs vector, keyword and hybrid retrieval side by side. If `CITERAG_RERANKER` is
+set, the reranker is part of what is measured and the output says so. `--details` lists the
+questions with no relevant hit and the sources retrieved instead. `--json` prints a JSON
+array with one full report per mode (per-question scores and retrieved chunks included),
+handy for tracking regressions in CI. A `source` that is not indexed only prints a warning
+(it scores as a miss); a missing file or a malformed line exits with status 1 and names the
+line.
 
 ## Roadmap
 
