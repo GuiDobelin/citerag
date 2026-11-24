@@ -1,11 +1,12 @@
 import json
 
 import pytest
+import typer
 from conftest import BERLIN, LISBON
 from typer.testing import CliRunner
 
-from citerag.cli import app
-from citerag.pipeline import RAG
+from citerag.cli import _check_mode, app
+from citerag.pipeline import RAG, RETRIEVAL_MODES
 
 runner = CliRunner()
 
@@ -146,10 +147,17 @@ def test_eval_and_ask_reject_unknown_modes_the_same_way(use_rag, tmp_path):
     evaluated = runner.invoke(app, ["eval", str(dataset), "--mode", "fuzzy"])
     asked = runner.invoke(app, ["ask", "Q", "--mode", "fuzzy"])
     assert evaluated.exit_code == asked.exit_code == 2
-    assert "--mode" in evaluated.output and "--mode" in asked.output
-    assert "vector, keyword, hybrid, all" in evaluated.output
-    assert "vector, keyword, hybrid" in asked.output
-    assert "hybrid, all" not in asked.output
+
+
+def test_check_mode_names_the_option_and_the_allowed_values():
+    # Checked on the helper: Rich wraps and colours the CLI error box (forced on in CI).
+    _check_mode(None, RETRIEVAL_MODES)
+    _check_mode("all", (*RETRIEVAL_MODES, "all"))
+    with pytest.raises(typer.BadParameter, match="vector, keyword, hybrid, all$") as exc:
+        _check_mode("fuzzy", (*RETRIEVAL_MODES, "all"))
+    assert exc.value.param_hint == "'--mode'"
+    with pytest.raises(typer.BadParameter, match="vector, keyword, hybrid$"):
+        _check_mode("all", RETRIEVAL_MODES)
 
 
 def test_eval_pluralises_the_question_count(use_rag, tmp_path):
